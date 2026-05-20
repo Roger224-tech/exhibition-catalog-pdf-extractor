@@ -79,12 +79,12 @@ def export_to_excel(
     # ── 表头 ──
     HEADERS = [
         ("页码", 6),
-        ("产品编号 / OE号", 18),
         ("品牌 / 制造商", 14),
         ("车型适配", 22),
+        ("产品编号 / OE号", 18),
         ("描述一", 28),
         ("描述二", 30),
-        ("规格参数", 24),
+        ("描述三 / 规格", 24),
         ("价格", 12),
         ("原厂参考号", 16),
         ("每包数量", 10),
@@ -116,19 +116,19 @@ def export_to_excel(
     for row_idx, product in enumerate(products, 2):
         ws.cell(row=row_idx, column=1, value=product.get("page", "")).border = thin_border
 
-        # OE号
-        ws.cell(row=row_idx, column=2,
-                value=_field_val(product, "oe_number")).border = thin_border
-        _mark_low_conf(ws, row_idx, 2, product.get("oe_number", {}), low_conf_fill)
-
         # 品牌
-        ws.cell(row=row_idx, column=3,
+        ws.cell(row=row_idx, column=2,
                 value=_field_val(product, "brand")).border = thin_border
-        _mark_low_conf(ws, row_idx, 3, product.get("brand", {}), low_conf_fill)
+        _mark_low_conf(ws, row_idx, 2, product.get("brand", {}), low_conf_fill)
 
         # 车型适配
-        ws.cell(row=row_idx, column=4,
+        ws.cell(row=row_idx, column=3,
                 value=_field_val(product, "vehicle_fitment")).border = thin_border
+
+        # OE号
+        ws.cell(row=row_idx, column=4,
+                value=_field_val(product, "oe_number")).border = thin_border
+        _mark_low_conf(ws, row_idx, 4, product.get("oe_number", {}), low_conf_fill)
 
         # 描述一
         ws.cell(row=row_idx, column=5,
@@ -138,9 +138,9 @@ def export_to_excel(
         ws.cell(row=row_idx, column=6,
                 value=_field_val(product, "description_2")).border = thin_border
 
-        # 规格参数
+        # 描述三/规格
         ws.cell(row=row_idx, column=7,
-                value=_field_val(product, "specs")).border = thin_border
+                value=_field_val(product, "description_3")).border = thin_border
 
         # 价格
         ws.cell(row=row_idx, column=8,

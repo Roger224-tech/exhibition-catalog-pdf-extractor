@@ -296,11 +296,17 @@ class FieldExtractor:
             col_vehicle = column_vehicle.get(col_id, {})
             card_vehicle = self._extract_vehicle(full_text)
             if col_vehicle.get("value"):
-                # 优先使用列顶部车型，附加卡片内的年份/车型细节
                 col_val = col_vehicle["value"]
                 card_val = card_vehicle.get("value", "")
-                # 如果卡片内有更详细的年份信息，补充进去
-                if card_val and len(card_val) < len(col_val):
+                # 只有card_val包含车型年份信息时才拼接，避免将描述文本误拼入车型
+                has_vehicle_info = bool(
+                    card_val and (
+                        re.search(r'\b\d{2}\s*[-–—]\s*\d{2,4}\+?\b', card_val)  # 年份范围: 16-20, 14-17
+                        or re.search(r'\b\d{2}\+\b', card_val)  # 年份: 18+, 21+
+                        or re.search(r'\b\d{4}\s*[-–—]\s*\d{4}\b', card_val)  # 4位年份: 2014-2017
+                    )
+                )
+                if card_val and has_vehicle_info and len(card_val) < len(col_val):
                     combined = f"{col_val} {card_val}"
                 else:
                     combined = col_val if col_val else card_val
@@ -320,7 +326,7 @@ class FieldExtractor:
             product["description_2"] = desc_results.get("description_2", {"value": "", "confidence": 0.0, "method": "none"})
 
             # ── 其他字段 ──
-            product["specs"] = self._extract_specs(full_text)
+            product["description_3"] = self._extract_specs(full_text)
             product["price"] = self._extract_price(full_text)
             product["oem_ref"] = self._extract_oem_ref(full_text)
             product["pack_qty"] = self._extract_pack_qty(full_text)
@@ -685,9 +691,17 @@ class FieldExtractor:
         for pattern, base_conf in CAR_MODEL_PATTERNS:
             for match in re.finditer(pattern, text, re.IGNORECASE):
                 value = match.group(0) if match.lastindex is None else match.group()
-                if len(value.strip()) < 3:
+                value = value.strip()
+                if len(value) < 3:
                     continue
-                candidates.append({"value": value.strip(), "confidence": round(base_conf, 2), "method": "regex"})
+                # 裁剪产品名称格式：文本中包含 /XX.../ 模式的，截断到第一个产品名之前
+                # 避免 "FOR HONDA CIVC 16-20 /Type-R Spoiler(For Sedan)" 这种误匹配
+                slash_product_idx = re.search(r'\s/\s*[A-Z]', value)
+                if slash_product_idx:
+                    value = value[:slash_product_idx.start()].strip()
+                if len(value) < 3:
+                    continue
+                candidates.append({"value": value, "confidence": round(base_conf, 2), "method": "regex"})
 
         best = self._dedup_candidates(candidates)
         if best:
@@ -702,63 +716,142 @@ class FieldExtractor:
         - 从产品卡片文本中，移除已识别字段（OE号、品牌、车型等）
         - 剩余文本按距离OE号排序：最近的文本块是描述一，次近的是描述二
         - 过滤掉页码、纯数字、纯符号、车型文本等无效文本
+        - 距离截断：远离OE锚点的文本块不分配到任何描述字段
         """
-        # 收集要被排除的已识别文本
-        excluded_texts = set()
+        # ── 构建排除集合 ──
+        # 只排除完整字段值（长文本），不使用单词片段排除（避免"FOR"等常见词误伤描述）
+        excluded_full_texts = set()
         for key in ["oe_number", "brand", "vehicle_fitment", "price", "oem_ref"]:
             val = product.get(key, {})
             if isinstance(val, dict) and val.get("value"):
-                excluded_texts.add(val["value"].strip())
-                # 也添加其中的单词片段来做局部过滤
-                words = val["value"].strip().split()
-                for w in words:
-                    if len(w) > 3:
-                        excluded_texts.add(w)
+                full_val = val["value"].strip()
+                if len(full_val) >= 6:  # 只排除足够长的完整值，避免短词污染
+                    excluded_full_texts.add(full_val.lower())
 
-        # 收集车型拟合文本的片段用于过滤
-        veh_val = product.get("vehicle_fitment", {}).get("value", "")
-        veh_fragments = set()
-        if veh_val:
-            for part in veh_val.split():
-                if len(part) > 3:
-                    veh_fragments.add(part)
-            # 添加常见的车型引导词
-            for prefix in ["FOR", "FOR:", "REPLACEMENT", "REPLACEMENT FOR"]:
-                veh_fragments.add(prefix)
+        # ── 车型年份模式（用于过滤纯车型文本块）──
+        VEHICLE_YEAR_PATTERNS = [
+            # 纯年份/年份范围
+            r'^\d{2}\s*[-–—]\s*\d{2,4}\s*\+?\s*$',
+            r'^\d{2}\s*[-–—]\s*\d{2,4}\s*[-–—]\s*\d{2,4}\s*$',
+            r'^\d{2}\+\s*$',
+            # 车型代码 + 年份: 模型代码可含字母和数字
+            r'^[A-Z0-9]{2,6}\s+\d{2}\s*[-–—]\s*\d{2,4}\+?\s*$',
+            r'^[A-Z0-9]{2,6}\s+\d{2}\+\s*$',
+            # 车型代码 + 年份 + 额外年份: "Q50 14-17 18+"
+            r'^[A-Z0-9]{2,6}\s+\d{2}\s*[-–—]\s*\d{2,4}\s+\d{2}\+\s*$',
+        ]
+        # 纯车型代码（常见车系缩写，容易被OCR截断，仅短文本匹配）
+        VEHICLE_CODE_BLACKLIST = {
+            'CIVC', 'CVC', 'CVIC', 'CIVIC',  # Honda Civic variants
+        }
+
+        # ── OE引用模式（描述中引用的其他产品编号）──
+        OE_REF_PATTERN = re.compile(
+            r'\b([A-Z]{2,4}\s*[-–—]\s*[A-Z0-9]{2,6}\s*[-–—]\s*\d{2,4})/?\b'
+        )
+
+        # ── 计算归一化参数 ──
+        font_sizes = [b.get("font_size_avg", 10) for b in blocks if b.get("font_size_avg", 0) > 0]
+        avg_font_size = sum(font_sizes) / max(len(font_sizes), 1) if font_sizes else 10
+        line_height = max(avg_font_size * 2.2, 15)
 
         # 从文本块中提取候选描述
         desc_parts = []
+        oe_val = product.get("oe_number", {}).get("value", "")
+        oe_val_clean = oe_val.strip('/').strip() if oe_val else ""
+
         for blk in blocks:
             txt = blk.get("text", "").strip()
             if not txt:
                 continue
-            # 过滤无效文本
+            # ── 基础过滤 ──
             if re.match(r'^PAGE\s*\d', txt, re.IGNORECASE):
                 continue
             if re.match(r'^[\$\€\¥]', txt):
                 continue
             if re.match(r'^\d+$', txt):
                 continue
-            if re.match(r'^[□��]+$', txt):
+            if re.match(r'^[□\u25a0\u25a1\u2b1b\u2b1c\ufffd]+$', txt):
                 continue
             if len(txt) < 3:
                 continue
-            # 跳过OE号本身
-            oe_val = product.get("oe_number", {}).get("value", "")
-            if oe_val and oe_val.strip('/').strip() == txt.strip('/').strip():
-                continue
-            # 跳过已被其他字段使用的文本
+
+            # ── OE号排除：如果文本块包含OE号，移除OE部分后保留剩余描述文本 ──
+            if oe_val_clean and len(oe_val_clean) >= 4:
+                if oe_val_clean in txt:
+                    # Split block text by lines, remove the OE line, keep description lines
+                    sub_lines = txt.split('\n')
+                    kept_lines = []
+                    for sl in sub_lines:
+                        sl = sl.strip()
+                        if not sl:
+                            continue
+                        if oe_val_clean in sl:
+                            # Remove OE portion from this line, keep rest if any
+                            remainder = sl.replace(oe_val_clean, '').strip(' /-')
+                            if remainder and len(remainder) >= 3:
+                                kept_lines.append(remainder)
+                        else:
+                            if len(sl) >= 3:
+                                kept_lines.append(sl)
+                    if not kept_lines:
+                        continue
+                    # Process each kept line as a separate description candidate
+                    # Distribute Y positions across the original block height so line
+                    # grouping can separate them correctly.
+                    block_bbox = blk["bbox"]
+                    block_h = block_bbox[3] - block_bbox[1]
+                    num_kept = len(kept_lines)
+                    line_h = block_h / num_kept if num_kept > 0 else blk.get("font_size_avg", 10) * 1.2
+                    fs = blk.get("font_size_avg", 10)
+                    cx = (block_bbox[0] + block_bbox[2]) / 2
+                    for i, line_text in enumerate(kept_lines):
+                        if len(line_text) < 3:
+                            continue
+                        cy = block_bbox[1] + (i + 0.5) * line_h
+                        desc_parts.append((line_text, fs, cx, cy))
+                    continue  # Skip normal block processing for this block
+                elif txt.strip('/').strip() in oe_val_clean:
+                    continue
+
+            # ── 排除已被其他字段使用的文本（完整值匹配，不用单词片段）──
             is_excluded = False
-            for excluded in excluded_texts:
-                if excluded and len(excluded) > 3 and excluded in txt:
-                    is_excluded = True
-                    break
+            txt_lower = txt.lower()
+            for excluded in excluded_full_texts:
+                if len(excluded) >= 6:
+                    # 文本块与已提取字段值显著重叠 → 排除
+                    if excluded in txt_lower or txt_lower in excluded:
+                        is_excluded = True
+                        break
             if is_excluded:
                 continue
-            # 跳过主要是车型拟合的文本块
-            veh_frag_count = sum(1 for vf in veh_fragments if vf in txt)
-            if len(txt.split()) <= 5 and veh_frag_count >= 2:
-                continue  # 短文本且包含多个车型片段 → 可能是纯车型文本
+
+            # ── 排除纯车型年份文本 ──
+            txt_normalized = txt.strip('/').strip()
+            is_vehicle_year = False
+            for vp in VEHICLE_YEAR_PATTERNS:
+                if re.search(vp, txt_normalized, re.IGNORECASE):
+                    is_vehicle_year = True
+                    break
+            if is_vehicle_year:
+                continue
+
+            # ── 排除短车型代码 ──
+            if txt_normalized.upper() in VEHICLE_CODE_BLACKLIST:
+                continue
+
+            # ── 排除OE引用（描述中引用其他产品编号）──
+            # 如果文本块很短(<30字符)且主要是一个OE号引用，排除
+            if len(txt) < 35:
+                oe_ref_match = OE_REF_PATTERN.search(txt)
+                if oe_ref_match:
+                    ref_val = oe_ref_match.group(1)
+                    # 确保这不是自己的OE号
+                    if ref_val.strip('/') != oe_val_clean:
+                        # 短文本块主要由OE引用组成 → 排除
+                        remaining = txt.replace(oe_ref_match.group(0), '').strip('/').strip()
+                        if len(remaining) < 6:
+                            continue
 
             fs = blk.get("font_size_avg", 10)
             cx, cy = bbox_center(blk["bbox"])
@@ -770,20 +863,56 @@ class FieldExtractor:
                 "description_2": {"value": "", "confidence": 0.0, "method": "none"},
             }
 
-        # 按距离OE号排序（有oe_block时），否则按字号降序
+        # ── 按距离OE号排序 + 距离截断 ──
         if oe_block:
             ox, oy = bbox_center(oe_block["bbox"])
             desc_parts.sort(key=lambda x: ((x[2] - ox)**2 + (x[3] - oy)**2)**0.5)
+            # 距离截断：描述块必须在OE锚点附近（归一化距离 < 3.0倍行高）
+            DISTANCE_CUTOFF = line_height * 3.0
+            desc_parts = [
+                dp for dp in desc_parts
+                if abs(dp[3] - oy) < DISTANCE_CUTOFF  # 垂直距离截断
+            ]
         else:
             desc_parts.sort(key=lambda x: x[1], reverse=True)
 
-        # 描述一: 距离OE号最近的1-2个文本块
-        d1_parts = [dp[0] for dp in desc_parts[:2]]
-        description_1 = " ".join(d1_parts)[:150] if d1_parts else ""
+        # ── 分配描述字段（按行分组）──
+        # 策略: 按Y坐标将文本块分组为"行"
+        #   同一行的所有文本块 → 描述一
+        #   下一行的所有文本块 → 描述二
+        #   再下一行也归描述二
+        if len(desc_parts) >= 2:
+            # Sort by Y then X for line grouping
+            desc_parts.sort(key=lambda dp: (dp[3], dp[2]))
+            # Group into lines by Y proximity
+            font_sizes_line = [dp[1] for dp in desc_parts]
+            avg_fs_line = sum(font_sizes_line) / len(font_sizes_line) if font_sizes_line else 10
+            line_threshold = avg_fs_line * 0.6  # ~0.6x font size : separates lines reliably
+            grouped_lines = []
+            current_line = [desc_parts[0]]
+            for dp in desc_parts[1:]:
+                if abs(dp[3] - current_line[-1][3]) < line_threshold:
+                    current_line.append(dp)
+                else:
+                    grouped_lines.append(current_line)
+                    current_line = [dp]
+            grouped_lines.append(current_line)
+            # Within each line, sort left-to-right
+            for line in grouped_lines:
+                line.sort(key=lambda dp: dp[2])
+            # Allocate: line 0 → desc_1, line 1+ → desc_2
+            d1_parts = [dp[0] for dp in grouped_lines[0]]
+            d2_parts = []
+            for line in grouped_lines[1:]:
+                d2_parts.extend([dp[0] for dp in line])
+        elif len(desc_parts) == 1:
+            d1_parts = [desc_parts[0][0]]
+            d2_parts = []
+        else:
+            d1_parts = []
+            d2_parts = []
 
-        # 描述二: 剩余文本块
-        d2_start = 2 if description_1 else 1
-        d2_parts = [dp[0] for dp in desc_parts[d2_start:]]
+        description_1 = " ".join(d1_parts)[:150] if d1_parts else ""
         description_2 = " ".join(d2_parts)[:200] if d2_parts else ""
 
         return {
@@ -890,9 +1019,9 @@ def print_field_report(all_products: list, total_time: float):
     # 统计各字段命中率
     field_stats = defaultdict(lambda: {"hit": 0, "avg_conf": 0.0})
     for prod in all_products:
-        for field in ["oe_number", "brand", "vehicle_fitment",
-                       "description_1", "description_2",
-                       "specs", "price", "oem_ref", "pack_qty"]:
+        for field in ["brand", "vehicle_fitment", "oe_number",
+                       "description_1", "description_2", "description_3",
+                       "price", "oem_ref", "pack_qty"]:
             val = prod.get(field, {})
             if isinstance(val, dict) and val.get("value"):
                 field_stats[field]["hit"] += 1
