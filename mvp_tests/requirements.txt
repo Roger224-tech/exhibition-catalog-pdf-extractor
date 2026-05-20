@@ -1,0 +1,30 @@
+# === MVP技术验证依赖 ===
+
+# PDF解析 (核心)
+pymupdf>=1.24.0
+
+# OCR预留 (Phase 2)
+# paddleocr>=2.8.0
+
+# NLP
+spacy>=3.7.0
+# 安装后手动执行:
+# python -m spacy download zh_core_web_sm
+# python -m spacy download en_core_web_sm
+
+# 图像处理
+opencv-python>=4.9.0
+Pillow>=10.0.0
+
+# 数据处理 & Excel
+pandas>=2.2.0
+openpyxl>=3.1.0
+
+# 版面分析后备方案
+pdfplumber>=0.11.0
+
+# 配置解析
+PyYAML>=6.0
+
+# 命令行进度条
+tqdm>=4.66.0

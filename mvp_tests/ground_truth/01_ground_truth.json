@@ -1,0 +1,90 @@
+{
+  "source_file": "01.pdf",
+  "description": "ASPP Honda body kit parts catalog - double page layout",
+  "annotated_date": "2026-05-20",
+  "annotations": [
+    {
+      "product_id": "BF-Q50-007",
+      "page": 1,
+      "expected": {
+        "oe_number": "BF-Q50-007",
+        "brand": "ASPP",
+        "vehicle_fitment": "Infiniti Q50 2014-2017",
+        "product_name": "Q50 Grille",
+        "description_contains": ["Q50", "Grille"]
+      }
+    },
+    {
+      "product_id": "BF-Q50-004",
+      "page": 1,
+      "expected": {
+        "oe_number": "BF-Q50-004",
+        "brand": "ASPP",
+        "vehicle_fitment": "Infiniti Q50 2014-2017"
+      }
+    },
+    {
+      "product_id": "BF-HDCV-001",
+      "page": 1,
+      "expected": {
+        "oe_number": "BF-HDCV-001",
+        "brand": "ASPP",
+        "vehicle_fitment": "Honda Civic 2016-2020",
+        "product_name": "Si Body Kit"
+      }
+    },
+    {
+      "product_id": "BF-Q50-008",
+      "page": 1,
+      "expected": {
+        "oe_number": "BF-Q50-008",
+        "brand": "ASPP",
+        "product_name": "Si Spoiler With Brake Light",
+        "description_contains": ["Spoiler", "Tail Pipe"]
+      }
+    },
+    {
+      "product_id": "BF-HDCV-009",
+      "page": 2,
+      "expected": {
+        "oe_number": "BF-HDCV-009",
+        "brand": "ASPP",
+        "vehicle_fitment": "Honda Civic 16-20",
+        "description_contains": ["Type-R", "Steel"]
+      }
+    },
+    {
+      "product_id": "BF-HDCV-040",
+      "page": 2,
+      "expected": {
+        "oe_number": "BF-HDCV-040",
+        "product_name": "Si Rear Fog Lamp Cover"
+      }
+    },
+    {
+      "product_id": "BF-HDCV-022",
+      "page": 5,
+      "expected": {
+        "oe_number": "BF-HDCV-022",
+        "brand": "ASPP",
+        "vehicle_fitment": "Honda Civic 16-20"
+      }
+    },
+    {
+      "product_id": "BF-HDCV-087",
+      "page": 8,
+      "expected": {
+        "oe_number": "BF-HDCV-087",
+        "brand": "ASPP",
+        "vehicle_fitment": "Honda Civic 21+ / Accord 2018+ / City 15-19"
+      }
+    }
+  ],
+  "evaluation_rules": {
+    "oe_number": {"match": "exact", "weight": 0.30},
+    "brand": {"match": "exact", "weight": 0.20},
+    "vehicle_fitment": {"match": "contains_keywords", "weight": 0.20},
+    "product_name": {"match": "contains_keywords", "weight": 0.15},
+    "description": {"match": "contains_keywords", "weight": 0.15}
+  }
+}

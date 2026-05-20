@@ -1,0 +1,84 @@
+{
+  "source_file": "02.pdf",
+  "description": "巨流/Judiu Changzhou Tianqing Auto Parts - VW Caddy replacement parts catalog",
+  "annotated_date": "2026-05-20",
+  "annotations": [
+    {
+      "product_id": "PZ04C-001",
+      "page": 1,
+      "expected": {
+        "oe_number": "PZ04C-001",
+        "brand": "巨流",
+        "vehicle_fitment": "Caddy 2004",
+        "product_name": "Front Bumper Grille Chromed",
+        "oem_ref_contains": ["1T0807221"]
+      }
+    },
+    {
+      "product_id": "PZ04C-002",
+      "page": 1,
+      "expected": {
+        "oe_number": "PZ04C-002",
+        "brand": "巨流",
+        "vehicle_fitment": "Caddy 2004",
+        "product_name": "Grille Black"
+      }
+    },
+    {
+      "product_id": "PZ04C-003",
+      "page": 1,
+      "expected": {
+        "oe_number": "PZ04C-003",
+        "vehicle_fitment": "Caddy 2004",
+        "product_name": "Front Bumper Lower",
+        "oem_ref_contains": ["1T0853651A"]
+      }
+    },
+    {
+      "product_id": "PZ10C-001",
+      "page": 2,
+      "expected": {
+        "oe_number": "PZ10C-001",
+        "brand": "巨流",
+        "vehicle_fitment": "Caddy 2010",
+        "product_name": "Front Bumper Grille",
+        "oem_ref_contains": ["1T0807221A"]
+      }
+    },
+    {
+      "product_id": "PZ10C-002",
+      "page": 2,
+      "expected": {
+        "oe_number": "PZ10C-002",
+        "vehicle_fitment": "Caddy 2010",
+        "product_name": "Bumper Grille",
+        "oem_ref_contains": ["1T0853651C"]
+      }
+    },
+    {
+      "product_id": "PZ16C-001",
+      "page": 3,
+      "expected": {
+        "oe_number": "PZ16C-001",
+        "vehicle_fitment": "Caddy 2016",
+        "product_name": "Front Bumper"
+      }
+    },
+    {
+      "product_id": "PZ20C-001",
+      "page": 5,
+      "expected": {
+        "oe_number": "PZ20C-001",
+        "vehicle_fitment": "Caddy 2020",
+        "product_name": "Front Bumper"
+      }
+    }
+  ],
+  "evaluation_rules": {
+    "oe_number": {"match": "exact", "weight": 0.30},
+    "brand": {"match": "exact", "weight": 0.20},
+    "vehicle_fitment": {"match": "contains_keywords", "weight": 0.20},
+    "product_name": {"match": "contains_keywords", "weight": 0.15},
+    "oem_ref": {"match": "contains_keywords", "weight": 0.15}
+  }
+}

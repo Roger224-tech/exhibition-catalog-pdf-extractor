@@ -1,0 +1,51 @@
+# MVP技术验证配置文件
+# 所有路径相对于 mvp_tests/ 目录
+
+# PDF输入 (放入test_pdfs目录)
+pdfs:
+  - test_pdfs/sample_a.pdf   # 表格型汽配目录
+  - test_pdfs/sample_b.pdf   # 卡片型汽配目录
+  - test_pdfs/sample_c.pdf   # 自由排版型
+
+# 输出目录
+output:
+  parsing: step1_parsing
+  layout: step2_layout
+  fields: step3_fields
+  matching: step4_matching
+  final: step5_output
+
+# PDF解析参数
+parsing:
+  text_min_length: 50        # 少于该字符数判定为扫描件
+  image_min_size: [50, 50]   # 忽略过小图片 (宽, 高)px
+
+# 版面分析参数
+layout:
+  engine: "mineru"           # mineru | pdfplumber (mineru不可用时自动切换)
+  card_gap_threshold: 30     # 卡片间最小空白间距 (pt)
+  header_footer_margin: 50   # 页眉页脚判定边距 (pt)
+
+# 字段抽取参数
+fields:
+  oe_confidence_threshold: 0.70
+  brand_confidence_threshold: 0.70
+  nlp_model_zh: "zh_core_web_sm"
+  nlp_model_en: "en_core_web_sm"
+
+# 图片关联参数
+matching:
+  containment_confidence: 0.95
+  max_distance_ratio: 0.3    # 最大允许距离/页面尺寸比
+  low_confidence_threshold: 0.70
+
+# Excel输出参数
+excel:
+  image_mode: "embed"         # embed | path
+  thumbnail_size: [120, 120]
+  highlight_low_confidence: true
+
+# 性能目标
+performance:
+  parsing_per_page_sec: 0.5
+  total_100page_min: 5.0

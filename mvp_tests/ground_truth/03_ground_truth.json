@@ -1,0 +1,68 @@
+{
+  "source_file": "03.pdf",
+  "description": "BMW exhaust tail pipe tips catalog - multi-product per page with images",
+  "annotated_date": "2026-05-20",
+  "annotations": [
+    {
+      "product_id": "SM-BMW-001",
+      "page": 1,
+      "expected": {
+        "oe_number": "SM-BMW-001",
+        "vehicle_fitment": "BMW F01/F02/F03",
+        "description_contains": ["740", "upgrade"]
+      }
+    },
+    {
+      "product_id": "SM-BMW-002",
+      "page": 1,
+      "expected": {
+        "oe_number": "SM-BMW-002",
+        "vehicle_fitment": "BMW G15/G16",
+        "description_contains": ["Original", "square"]
+      }
+    },
+    {
+      "product_id": "SM-BMW-004",
+      "page": 1,
+      "expected": {
+        "oe_number": "SM-BMW-004",
+        "vehicle_fitment": "BMW G11/G12",
+        "description_contains": ["730", "740"]
+      }
+    },
+    {
+      "product_id": "SM-BMW-013",
+      "page": 2,
+      "expected": {
+        "oe_number": "SM-BMW-013",
+        "vehicle_fitment": "BMW G30/G38",
+        "description_contains": ["Original", "square"]
+      }
+    },
+    {
+      "product_id": "SM-BMW-025",
+      "page": 3,
+      "expected": {
+        "oe_number": "SM-BMW-025",
+        "vehicle_fitment": "BMW G20/G28",
+        "description_contains": ["upgrade", "Black Knight"]
+      }
+    },
+    {
+      "product_id": "SM-BMW-037",
+      "page": 4,
+      "expected": {
+        "oe_number": "SM-BMW-037",
+        "vehicle_fitment": "BMW G80/G82",
+        "description_contains": ["upgrade", "carbon fibre"]
+      }
+    }
+  ],
+  "evaluation_rules": {
+    "oe_number": {"match": "exact", "weight": 0.35},
+    "brand": {"match": "exact", "weight": 0.10},
+    "vehicle_fitment": {"match": "contains_keywords", "weight": 0.25},
+    "product_name": {"match": "contains_keywords", "weight": 0.15},
+    "description": {"match": "contains_keywords", "weight": 0.15}
+  }
+}

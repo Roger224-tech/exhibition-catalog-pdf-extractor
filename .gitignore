@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Test PDFs (large binary files)
+mvp_tests/test_pdfs/
+
+# Output directories
+mvp_tests/step1_parsing/
+mvp_tests/step2_layout/
+mvp_tests/step3_fields/
+mvp_tests/step4_matching/
+mvp_tests/step5_output/
+mvp_tests/step5_output_v2/
+
+# Extracted images
+mvp_tests/*/images/
+mvp_tests/*/*_images/
+
+# Claude Code settings
+.claude/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

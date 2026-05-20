@@ -1,0 +1,61 @@
+{
+  "_说明": "人工标注模板 — 用于验证AI提取准确率。对每份测试PDF，逐页标注。",
+  "_标注指南": "1. 打开PDF对应页码 2. 找到每个产品 3. 填写以下字段的正确值 4. 标注产品在PDF中的位置 5. 标注该产品的对应图片编号",
+
+  "pdf_name": "sample_a.pdf",
+  "annotator": "标注人姓名",
+  "annotated_date": "2026-05-19",
+
+  "annotations": [
+    {
+      "page": 1,
+      "products": [
+        {
+          "product_id": "001",
+          "bbox": [100, 200, 500, 400],
+
+          "ground_truth": {
+            "oe_number": "BMW-345267",
+            "product_name": "前刹车片",
+            "brand": "Bosch",
+            "vehicle_fitment": "宝马3系 E90 2005-2012",
+            "specs": "尺寸：150mm，材质：陶瓷",
+            "description": "原厂品质，低粉尘，耐磨性强",
+            "price": "$45.99",
+            "oem_ref": "34116761227",
+            "pack_qty": "1套/盒(4片)"
+          },
+
+          "related_images": [0],
+          "notes": "产品卡片位于页面左上角"
+        }
+      ],
+
+      "invalid_regions": [
+        {"type": "header", "bbox": [0, 0, 600, 50], "text": "ABC Auto Parts Catalog"},
+        {"type": "footer", "bbox": [0, 750, 600, 800], "text": "Page 1"}
+      ]
+    }
+  ],
+
+  "field_definitions": {
+    "oe_number": "产品编号/OE号 — 配件的唯一标识编号",
+    "product_name": "产品名称 — 配件的中文或英文名称",
+    "brand": "品牌/制造商 — 产品的品牌名称",
+    "vehicle_fitment": "车型适配 — 适用的车型、年款信息",
+    "specs": "规格参数 — 尺寸、材质、重量等技术参数",
+    "description": "简要描述 — 产品特点、用途等描述文字",
+    "price": "价格 — 产品单价（含货币符号）",
+    "oem_ref": "原厂参考号 — OEM编号或交叉引用编号",
+    "pack_qty": "每包数量 — 包装单位信息"
+  },
+
+  "accuracy_calculation": {
+    "_说明": "计算AI提取结果与标注的匹配率",
+    "field_match_rule": "完全匹配或模糊匹配(编辑距离≤2)视为正确",
+    "oe_number_accuracy": "正确提取的OE号 / 总产品数",
+    "brand_accuracy": "正确识别的品牌 / 总产品数",
+    "image_match_accuracy": "正确关联的图片 / 总图片数",
+    "overall_field_accuracy": "所有字段正确提取数 / (总产品数 × 字段数)"
+  }
+}
