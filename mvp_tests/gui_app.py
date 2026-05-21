@@ -49,18 +49,6 @@ except ImportError as e:
 #  Constants
 # ═════════════════════════════════════════════════════
 
-FIELD_DEFINITIONS = [
-    {"key": "brand",          "label": "品牌/制造商",    "editable": True},
-    {"key": "vehicle_fitment","label": "车型适配",       "editable": True},
-    {"key": "oe_number",      "label": "产品编号/OE号", "editable": True},
-    {"key": "description_1",  "label": "描述一",         "editable": True},
-    {"key": "description_2",  "label": "描述二",         "editable": True},
-    {"key": "description_3",  "label": "描述三/规格",    "editable": True},
-    {"key": "price",          "label": "价格",           "editable": True},
-    {"key": "oem_ref",        "label": "OEM参考号",      "editable": True},
-    {"key": "pack_qty",       "label": "每包数量",       "editable": True},
-]
-
 # Fields that form a "text group" — when OCR detects multiple lines over
 # these fields' region, lines are auto-distributed in order.
 TEXT_GROUP_FIELDS = ["oe_number", "description_1", "description_2", "description_3"]
@@ -145,12 +133,9 @@ def save_active_template(definitions: list):
     return save_templates(templates, "默认模板")
 
 
-# Load active template on module init
+# Load active template on module init; fall back to DEFAULT_FIELD_DEFINITIONS
 _custom = load_active_template()
-if _custom:
-    FIELD_DEFINITIONS = _custom
-else:
-    FIELD_DEFINITIONS = list(DEFAULT_FIELD_DEFINITIONS)
+FIELD_DEFINITIONS = _custom if _custom else list(DEFAULT_FIELD_DEFINITIONS)
 
 CONFIDENCE_COLORS = {
     "high":   "#34C759",  # >= 0.8  Apple绿
@@ -735,8 +720,6 @@ class FieldEditorPanel(ttk.Frame):
         # Field widgets
         self.field_entries = {}
         self.confidence_canvases = {}
-        self.confidence_labels = {}
-        self.method_labels = {}
         self.re_extract_buttons = {}
         self.on_re_extract_callback = None
 
@@ -839,6 +822,12 @@ class FieldEditorPanel(ttk.Frame):
         if container_w < 10:
             return
 
+        # Skip re-layout if width hasn't changed meaningfully
+        last_w = getattr(self, '_last_btn_container_w', 0)
+        if abs(container_w - last_w) < 5:
+            return
+        self._last_btn_container_w = container_w
+
         pad_x, pad_y = 3, 3
         gap_x = 6  # horizontal gap between button groups (separator)
 
@@ -903,8 +892,6 @@ class FieldEditorPanel(ttk.Frame):
         # Clear references
         self.field_entries.clear()
         self.confidence_canvases.clear()
-        self.confidence_labels.clear()
-        self.method_labels.clear()
         self.re_extract_buttons.clear()
 
         # Recreate field rows
@@ -963,7 +950,8 @@ class FieldEditorPanel(ttk.Frame):
 
         # Refresh scroll region after widget recreation
         self.field_frame.update_idletasks()
-        # Trigger initial button layout
+        # Reset throttle so buttons re-layout after rebuild
+        self._last_btn_container_w = 0
         self._reflow_buttons()
         self.field_canvas.configure(scrollregion=self.field_canvas.bbox("all"))
         # Re-apply canvas window width so Entry widgets fill available space
@@ -1260,10 +1248,7 @@ class PipelineRunner:
             for i, page_data in enumerate(parsed.get("pages", [])):
                 if self.cancelled:
                     return
-                if page_data.get("is_scanned") and not page_data.get("ocr_applied"):
-                    text_blocks = page_data.get("text_blocks", [])
-                else:
-                    text_blocks = page_data.get("text_blocks", [])
+                text_blocks = page_data.get("text_blocks", [])
 
                 if not text_blocks:
                     continue
@@ -1958,6 +1943,7 @@ class MainApplication:
         self.output_dir = None
         self.images_dir = None
         self.all_matches = {}  # {page_num: [match, ...]}
+        self._current_project_path = None  # tracked for quick-save
 
         # Pipeline
         self.pipeline = PipelineRunner()
@@ -2135,7 +2121,8 @@ class MainApplication:
         file_menu.add_command(label="打开PDF...", command=self._on_open_pdf, accelerator="Ctrl+O")
         file_menu.add_command(label="打开JSON...", command=self._on_open_json)
         file_menu.add_separator()
-        file_menu.add_command(label="保存项目...", command=self._save_session, accelerator="Ctrl+Shift+S")
+        file_menu.add_command(label="保存项目", command=self._save_session, accelerator="Ctrl+S")
+        file_menu.add_command(label="另存为...", command=self._save_session_as, accelerator="Ctrl+Shift+S")
         file_menu.add_command(label="加载项目...", command=self._load_session, accelerator="Ctrl+Shift+O")
         file_menu.add_separator()
         file_menu.add_command(label="退出", command=self.root.quit, accelerator="Ctrl+Q")
@@ -2147,7 +2134,7 @@ class MainApplication:
 
         export_menu = tk.Menu(menubar, tearoff=0)
         export_menu.add_command(label="导出Excel...", command=self._on_export_excel, accelerator="Ctrl+E")
-        export_menu.add_command(label="导出JSON...", command=self._on_export_json, accelerator="Ctrl+S")
+        export_menu.add_command(label="导出JSON...", command=self._on_export_json, accelerator="Ctrl+J")
         export_menu.add_command(label="导出两者...", command=self._on_export_both)
         menubar.add_cascade(label="导出", menu=export_menu)
 
@@ -2170,6 +2157,7 @@ class MainApplication:
         ttk.Button(toolbar, text="📂 打开PDF", command=self._on_open_pdf).pack(side=tk.LEFT, padx=2)
         ttk.Button(toolbar, text="📂 打开JSON", command=self._on_open_json).pack(side=tk.LEFT, padx=2)
         ttk.Button(toolbar, text="💾 保存项目", command=self._save_session).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, text="📋 另存为...", command=self._save_session_as).pack(side=tk.LEFT, padx=2)
         ttk.Button(toolbar, text="📂 加载项目", command=self._load_session).pack(side=tk.LEFT, padx=2)
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=2)
         ttk.Button(toolbar, text="▶ 重新识别", command=self._on_run_pipeline).pack(side=tk.LEFT, padx=2)
@@ -2277,10 +2265,11 @@ class MainApplication:
 
     def _bind_shortcuts(self):
         self.root.bind("<Control-o>", lambda e: self._on_open_pdf())
-        self.root.bind("<Control-s>", lambda e: self._on_export_json())
-        self.root.bind("<Control-S>", lambda e: self._save_session())  # Ctrl+Shift+S
+        self.root.bind("<Control-s>", lambda e: self._save_session())
+        self.root.bind("<Control-S>", lambda e: self._save_session_as())  # Ctrl+Shift+S
         self.root.bind("<Control-O>", lambda e: self._load_session())  # Ctrl+Shift+O
         self.root.bind("<Control-e>", lambda e: self._on_export_excel())
+        self.root.bind("<Control-j>", lambda e: self._on_export_json())
         self.root.bind("<Control-r>", lambda e: self._on_run_pipeline())
         self.root.bind("<Control-n>", lambda e: self.product_list.select_next())
         self.root.bind("<Control-p>", lambda e: self.product_list.select_prev())
@@ -2302,6 +2291,7 @@ class MainApplication:
             return
 
         self.pdf_path = filepath
+        self._current_project_path = None  # new PDF = new project
         output_dir = os.path.join(os.path.dirname(filepath), "..", "step5_output")
         pdf_name = Path(filepath).stem
         self.output_dir = os.path.abspath(output_dir)
@@ -2341,48 +2331,56 @@ class MainApplication:
         self.progress.start()
         self.status_var.set("正在重新运行提取管线...")
         self.pipeline.run(self.pdf_path, self.output_dir)
+        # Start polling to receive pipeline results
+        self._poll_pipeline_queue()
 
     # ─── Pipeline Callbacks ───
 
     def _poll_pipeline_queue(self):
         """Poll the pipeline queue for progress updates."""
         try:
-            while True:
-                msg = self.pipeline.queue.get_nowait()
-                msg_type = msg[0]
+            try:
+                while True:
+                    msg = self.pipeline.queue.get_nowait()
+                    msg_type = msg[0]
 
-                if msg_type == "progress":
-                    self.status_var.set(msg[1])
-                elif msg_type == "warning":
-                    self.status_var.set(f"⚠ {msg[1]}")
-                elif msg_type == "status_update":
-                    _, status_text = msg
-                    self.status_var.set(status_text)
-                elif msg_type == "ocr_done":
-                    _, field_key, text, product_idx, pdf_bbox = msg
-                    self._on_ocr_done(field_key, text, product_idx, pdf_bbox)
-                elif msg_type == "ocr_error":
-                    _, field_key, error = msg
-                    self._on_ocr_error(field_key, error)
-                elif msg_type == "image_extracted":
-                    _, product_idx, image_path = msg
-                    self._on_image_extracted(product_idx, image_path)
-                elif msg_type == "image_error":
-                    _, product_idx, error = msg
-                    self._on_image_error(product_idx, error)
-                elif msg_type == "done":
-                    _, products, report, fields_path, excel_path, images_dir, *rest = msg
-                    all_matches = rest[0] if rest else {}
-                    self._on_pipeline_complete(products, report, fields_path, excel_path, images_dir, all_matches)
-                elif msg_type == "error":
-                    self.progress.stop()
-                    self.progress.pack_forget()
-                    self.status_var.set("管线运行失败")
-                    messagebox.showerror("管线错误", f"提取过程出错:\n{msg[1]}")
-        except queue.Empty:
-            pass
+                    if msg_type == "progress":
+                        self.status_var.set(msg[1])
+                    elif msg_type == "warning":
+                        self.status_var.set(f"⚠ {msg[1]}")
+                    elif msg_type == "status_update":
+                        _, status_text = msg
+                        self.status_var.set(status_text)
+                    elif msg_type == "ocr_done":
+                        _, field_key, text, product_idx, pdf_bbox = msg
+                        self._on_ocr_done(field_key, text, product_idx, pdf_bbox)
+                    elif msg_type == "ocr_error":
+                        _, field_key, error = msg
+                        self._on_ocr_error(field_key, error)
+                    elif msg_type == "image_extracted":
+                        _, product_idx, image_path = msg
+                        self._on_image_extracted(product_idx, image_path)
+                    elif msg_type == "image_error":
+                        _, product_idx, error = msg
+                        self._on_image_error(product_idx, error)
+                    elif msg_type == "done":
+                        _, products, report, fields_path, excel_path, images_dir, *rest = msg
+                        all_matches = rest[0] if rest else {}
+                        self._on_pipeline_complete(products, report, fields_path, excel_path, images_dir, all_matches)
+                    elif msg_type == "error":
+                        self.progress.stop()
+                        self.progress.pack_forget()
+                        self.status_var.set("管线运行失败")
+                        messagebox.showerror("管线错误", f"提取过程出错:\n{msg[1]}")
+            except queue.Empty:
+                pass
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            self.progress.stop()
+            self.progress.pack_forget()
 
-        # Continue polling
+        # Continue polling (stops via cancel in quit, or idles harmlessly)
         self._pipeline_after_id = self.root.after(200, self._poll_pipeline_queue)
 
     def _on_pipeline_complete(self, products: list, report: dict,
@@ -3429,13 +3427,34 @@ class MainApplication:
     SESSION_VERSION = "1.0"
 
     def _save_session(self):
-        """Save current editing session to a file for later resume."""
+        """Save current editing session. Overwrites current project file if known."""
+        if not self.products:
+            messagebox.showwarning("无数据", "没有可保存的项目数据")
+            return
+
+        if self._current_project_path and os.path.exists(os.path.dirname(self._current_project_path)):
+            filepath = self._current_project_path
+        else:
+            filepath = filedialog.asksaveasfilename(
+                title="保存项目",
+                defaultextension=".json",
+                filetypes=[("项目文件 (*.json)", "*.json"), ("All Files", "*.*")],
+                initialfile=f"{Path(self.pdf_path).stem}_project.json" if self.pdf_path else "project.json",
+            )
+            if not filepath:
+                return
+            self._current_project_path = filepath
+
+        self._write_session_file(filepath)
+
+    def _save_session_as(self):
+        """Save current editing session to a new file (always prompts for path)."""
         if not self.products:
             messagebox.showwarning("无数据", "没有可保存的项目数据")
             return
 
         filepath = filedialog.asksaveasfilename(
-            title="保存项目",
+            title="项目另存为",
             defaultextension=".json",
             filetypes=[("项目文件 (*.json)", "*.json"), ("All Files", "*.*")],
             initialfile=f"{Path(self.pdf_path).stem}_project.json" if self.pdf_path else "project.json",
@@ -3443,11 +3462,14 @@ class MainApplication:
         if not filepath:
             return
 
+        self._current_project_path = filepath
+        self._write_session_file(filepath)
+
+    def _write_session_file(self, filepath: str):
+        """Serialize and write session data to filepath."""
         try:
-            # Convert edit_state keys from int to str for JSON
             edit_state_str = {str(k): v for k, v in self.edit_state.items()}
 
-            # Serialize all_matches (keys are page numbers as strings)
             all_matches_serializable = {}
             for page_key, matches in (self.all_matches or {}).items():
                 all_matches_serializable[str(page_key)] = matches
@@ -3503,6 +3525,9 @@ class MainApplication:
                     f"尝试加载可能存在兼容性问题，是否继续？",
                 ):
                     return
+
+            # Track project file for quick-save
+            self._current_project_path = filepath
 
             # Restore state
             self.pdf_path = session.get("source_pdf")
@@ -3673,10 +3698,11 @@ class MainApplication:
             "• 人工校验和修正提取结果\n"
             "• 导出为JSON和Excel格式\n\n"
             "快捷键:\n"
-            "  Ctrl+O: 打开PDF  |  Ctrl+S: 导出JSON\n"
-            "  Ctrl+E: 导出Excel |  Ctrl+N/P: 上/下条产品\n"
-            "  Ctrl+R: 重新识别 |  Ctrl+Shift+S: 保存项目\n"
-            "  Ctrl+Shift+O: 加载项目 |  Esc: 取消框选\n\n"
+            "  Ctrl+O: 打开PDF  |  Ctrl+S: 保存项目\n"
+            "  Ctrl+Shift+S: 另存为  |  Ctrl+Shift+O: 加载项目\n"
+            "  Ctrl+E: 导出Excel |  Ctrl+J: 导出JSON\n"
+            "  Ctrl+R: 重新识别 |  Ctrl+N/P: 上/下条产品\n"
+            "  Esc: 取消框选\n\n"
             "© 2026 MVP Technical Validation"
         )
 
