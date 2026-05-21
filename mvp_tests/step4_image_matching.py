@@ -48,10 +48,14 @@ def match_images_to_products(
       matches: [{image_idx, product_idx, confidence, method}, ...]
     """
     # 过滤当前页的产品，并确保每个产品有有效的 card_bbox
-    page_products = [
-        p for p in products
-        if p.get("page") == page_num and p.get("card_bbox") and len(p.get("card_bbox", [])) == 4
-    ]
+    # Build parallel lists: page_products (product dicts) and global_indices (index in full products list)
+    page_products = []
+    global_indices = []
+    for global_idx, p in enumerate(products):
+        if p.get("page") == page_num and p.get("card_bbox") and len(p.get("card_bbox", [])) == 4:
+            page_products.append(p)
+            global_indices.append(global_idx)
+
     # 过滤无有效bbox的图片
     valid_images = [
         (i, img) for i, img in enumerate(page_images)
@@ -59,6 +63,22 @@ def match_images_to_products(
     ]
     if not page_products or not valid_images:
         return []
+
+    def _make_match(img_idx, local_prod_idx, confidence, method, **extra):
+        """Build a match dict with global product index and image info."""
+        img = page_images[img_idx]
+        match = {
+            "image_idx": img_idx,
+            "product_idx": global_indices[local_prod_idx],  # global index
+            "confidence": confidence,
+            "method": method,
+            # Image file info for later lookup
+            "image_xref": img.get("xref", img_idx),
+            "image_bbox": img.get("bbox", []),
+            "image_ext": img.get("ext", "jpeg"),
+        }
+        match.update(extra)
+        return match
 
     matches = []
     unmatched_images = list(valid_images)
@@ -72,17 +92,12 @@ def match_images_to_products(
             continue
 
         found = False
-        for prod in page_products:
+        for local_i, prod in enumerate(page_products):
             card_bbox = prod.get("card_bbox", [])
             if not card_bbox:
                 continue
             if bbox_contains(card_bbox, img_bbox):
-                matches.append({
-                    "image_idx": img_idx,
-                    "product_idx": page_products.index(prod),
-                    "confidence": 0.95,
-                    "method": "containment",
-                })
+                matches.append(_make_match(img_idx, local_i, 0.95, "containment"))
                 found = True
                 break
         if not found:
@@ -98,11 +113,11 @@ def match_images_to_products(
             continue
 
         img_center = bbox_center(img_bbox)
-        best_prod_idx = -1
+        best_local_idx = -1
         best_dist = float("inf")
         best_score = 0
 
-        for prod in page_products:
+        for local_i, prod in enumerate(page_products):
             card_bbox = prod.get("card_bbox", [])
             if not card_bbox or len(card_bbox) < 4:
                 continue
@@ -115,16 +130,12 @@ def match_images_to_products(
             if score > best_score:
                 best_score = score
                 best_dist = dist
-                best_prod_idx = page_products.index(prod)
+                best_local_idx = local_i
 
-        if best_prod_idx >= 0 and best_score > 0.3:
-            matches.append({
-                "image_idx": img_idx,
-                "product_idx": best_prod_idx,
-                "confidence": round(best_score, 2),
-                "method": "nearest_distance",
-                "distance_px": round(best_dist, 1),
-            })
+        if best_local_idx >= 0 and best_score > 0.3:
+            matches.append(_make_match(img_idx, best_local_idx,
+                                       round(best_score, 2), "nearest_distance",
+                                       distance_px=round(best_dist, 1)))
         else:
             still_unmatched.append((img_idx, img))
     unmatched_images = still_unmatched
@@ -136,25 +147,21 @@ def match_images_to_products(
         if not img_bbox or len(img_bbox) < 4:
             continue
 
-        best_prod_idx = -1
+        best_local_idx = -1
         best_overlap = 0
-        for prod in page_products:
+        for local_i, prod in enumerate(page_products):
             card_bbox = prod.get("card_bbox", [])
             if not card_bbox or len(card_bbox) < 4:
                 continue
             overlap = vertical_overlap(img_bbox, card_bbox)
             if overlap > best_overlap:
                 best_overlap = overlap
-                best_prod_idx = page_products.index(prod)
+                best_local_idx = local_i
 
         if best_overlap > 0.4:
-            matches.append({
-                "image_idx": img_idx,
-                "product_idx": best_prod_idx,
-                "confidence": 0.80,
-                "method": "vertical_alignment",
-                "overlap_ratio": round(best_overlap, 2),
-            })
+            matches.append(_make_match(img_idx, best_local_idx, 0.80,
+                                       "vertical_alignment",
+                                       overlap_ratio=round(best_overlap, 2)))
         else:
             still_unmatched2.append((img_idx, img))
     unmatched_images = still_unmatched2
@@ -163,19 +170,16 @@ def match_images_to_products(
     # 按y坐标排序图片和产品，顺序配对
     sorted_imgs = sorted(unmatched_images, key=lambda x: (x[1].get("bbox", [0, 0, 0, 0]) or [0, 0, 0, 0])[1])
     # 找一个还没有图片的产品
-    matched_prod_indices = {m["product_idx"] for m in matches}
-    unmatched_prods = [p for i, p in enumerate(page_products) if i not in matched_prod_indices]
-    sorted_prods = sorted(unmatched_prods, key=lambda p: (p.get("card_bbox", [0, 0, 0, 0]) or [0, 0, 0, 0])[1])
+    matched_global_indices = {m["product_idx"] for m in matches}
+    unmatched_prods = [(local_i, page_products[local_i])
+                       for local_i in range(len(page_products))
+                       if global_indices[local_i] not in matched_global_indices]
+    sorted_prods = sorted(unmatched_prods, key=lambda x: (x[1].get("card_bbox", [0, 0, 0, 0]) or [0, 0, 0, 0])[1])
 
     for i, (img_idx, img) in enumerate(sorted_imgs):
         if i < len(sorted_prods):
-            prod_idx = page_products.index(sorted_prods[i])
-            matches.append({
-                "image_idx": img_idx,
-                "product_idx": prod_idx,
-                "confidence": 0.60,
-                "method": "reading_order",
-            })
+            local_idx = sorted_prods[i][0]
+            matches.append(_make_match(img_idx, local_idx, 0.60, "reading_order"))
 
     return matches
 

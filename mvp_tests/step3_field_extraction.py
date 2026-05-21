@@ -25,7 +25,7 @@ import sys
 import time
 import argparse
 from pathlib import Path
-from collections import Counter
+from collections import Counter, defaultdict
 
 try:
     sys.stdout.reconfigure(encoding='utf-8')
@@ -63,8 +63,8 @@ OE_PATTERNS = [
     (r'\b([\d][A-Z0-9]{2}\s*\d{3}\s*\d{3,4}[A-Z]*)\b', 0.82),
     # OE号关键词引导: OE No.: L321-9876
     (r'(?:OE|OEM|O\.?E\.?)\s*(?:No|Number|号|编号)?[\.:\s]*([A-Z0-9][\w\-–—]{4,20})', 0.90),
-    # 参考号关键词: Ref. 8K0941597
-    (r'(?:Ref|参考|原厂)[\.:\s]*([A-Z0-9][\w\-–—]{4,20})', 0.85),
+    # 参考号关键词: Ref. 8K0941597 (排除常见英语单词如Reflector, Refresh等)
+    (r'(?:Ref|参考|原厂)\s*[\.:\s]+\s*([A-Z0-9][\w\-–—]{4,20})', 0.85),
     # 数字-数字格式（置信度降低，容易误匹配年份）
     (r'\b(\d{5,8})\s*[-–—]\s*(\d{2,8})\b', 0.70),
     # 纯数字编号 (8-11位) - 最低优先级
@@ -80,6 +80,7 @@ BRAND_DICT_CN = {
     "NTN": "NTN", "NSK": "NSK", "SKF": "SKF", "INA": "INA", "FAG": "FAG",
     "KYB": "KYB", "萨克斯": "SACHS", "卢卡斯": "Lucas", "辉门": "Federal-Mogul",
     "泰明顿": "Textar", "优锐": "TRW",
+    "巨流": "巨流",
 }
 
 BRAND_DICT_EN = {
@@ -94,7 +95,7 @@ BRAND_DICT_EN = {
     "bilstein": "Bilstein", "eibach": "Eibach", "monroe": "Monroe",
     "dayco": "Dayco", "contitech": "ContiTech", "ina": "INA",
     # 汽配外贸/改造件品牌
-    "aspp": "ASPP", "akm": "AKM", "xspeed": "XSpeed", "modesta": "Modesta",
+    "judiu": "Judiu", "aspp": "ASPP", "akm": "AKM", "xspeed": "XSpeed", "modesta": "Modesta",
     "cke": "CKE", "jp": "JP", "tyc": "TYC", "depo": "DEPO",
     "varis": "Varis", "ings": "INGS", "chargespeed": "ChargeSpeed",
     "mugen": "Mugen", "spoon": "Spoon", "hks": "HKS", "greddy": "Greddy",
@@ -111,13 +112,53 @@ BRAND_DICT_EN = {
 }
 
 # ── 车型适配 ──
+# 车辆品牌名（用于后续模式组合）
+CAR_BRAND_NAMES = (
+    r'宝马|BMW|奔驰|Benz|Mercedes|奥迪|Audi|大众|VW|Volkswagen|丰田|Toyota|本田|Honda'
+    r'|日产|Nissan|福特|Ford|现代|Hyundai|起亚|Kia|Infiniti|英菲尼迪|Lexus|雷克萨斯'
+    r'|Mazda|马自达|Subaru|斯巴鲁|Mitsubishi|三菱|Suzuki|铃木|Dodge|道奇|Jeep|吉普'
+    r'|Cadillac|凯迪拉克|Chevrolet|雪佛兰|GMC|Ford|福特|Lincoln|林肯|Buick|别克'
+    r'|Porsche|保时捷|Jaguar|捷豹|Land Rover|路虎|Volvo|沃尔沃|Mini|迷你|Fiat|菲亚特'
+    r'|Peugeot|标致|Citroen|雪铁龙|Renault|雷诺|Opel|欧宝|Vauxhall|沃克斯豪尔'
+    r'|Skoda|斯柯达|Seat|西雅特|Alfa Romeo|阿尔法|Ferrari|法拉利|Lamborghini|兰博基尼'
+    r'|Maserati|玛莎拉蒂|Bentley|宾利|Rolls Royce|劳斯莱斯|Aston Martin|阿斯顿马丁'
+    r'|McLaren|迈凯伦|Tesla|特斯拉|Rivian|Lucid|Polestar|极星'
+    r'|Man|MAN|Scania|斯堪尼亚|Iveco|依维柯|DAF|达夫|Renault|雷诺'
+)
+# 常见汽车型号（可独立出现，不依赖品牌前缀）
+CAR_MODEL_NAMES = (
+    r'Caddy|Golf|Polo|Passat|Tiguan|Touareg|Touran|Transporter|Crafter|Amarok'
+    r'|Civic|Accord|CR[-\s]?V|HR[-\s]?V|Pilot|Odyssey|Fit|Jazz|City|Insight'
+    r'|Corolla|Camry|RAV4|Highlander|Tacoma|Tundra|Yaris|Avalon|Sienna|Prius'
+    r'|Q50|Q60|Q70|QX50|QX60|QX80|G37|G35|M37|FX35|FX37|EX35'
+    r'|[A-Z]\d{2,3}'  # 平台代码: E90, F10, G20, W205, C300, etc.
+)
+FOR_PREFIX = r'(?:REPLACEMENT\s+)?(?:FOR|Fit\s*(?:for)?|Compatible\s*(?:with|for)?)'
 CAR_MODEL_PATTERNS = [
-    # 品牌 + 车系 + 年份
-    (r'(宝马|BMW|奔驰|Benz|Mercedes|奥迪|Audi|大众|VW|Volkswagen|丰田|Toyota|本田|Honda|日产|Nissan|福特|Ford|现代|Hyundai|起亚|Kia)\s*([\w\d\-]+)?\s*(E\d{2,3}|F\d{2}|G\d{2}|W\d{3}|C\d{1,2})?\s*(\d{4}\s*[-~–]\s*\d{4})?', 0.82),
-    # 通用车型关键词
-    (r'(适用于?|适配|适合|匹配|Fit\s*(for)?|Compatible\s*with|For)\s*[：:]*\s*(.+)', 0.78),
-    # 年份范围
-    (r'(\d{4})\s*[-~–]\s*(\d{4})', 0.70),
+    # "FOR BRAND MODEL YEAR-RANGE" (2位年份): FOR Honda Civic 16-20
+    (FOR_PREFIX + r'\s+(' + CAR_BRAND_NAMES + r')\s+([A-Z][A-Za-z0-9]{1,5}(?:\s*/\s*[A-Z][A-Za-z0-9]{1,5})*)\s+(\d{2}\s*[-–—]\s*\d{2,4}\+?)', 0.88),
+    # "FOR BRAND MODEL YEAR" (4位年份): FOR Honda Civic 2016-2020, REPLACEMENT FOR CADDY 2004
+    (FOR_PREFIX + r'\s+(' + CAR_BRAND_NAMES + r')\s+([A-Z][A-Za-z0-9]{1,5}(?:\s*/\s*[A-Z][A-Za-z0-9]{1,5})*)\s+(\d{4}\s*[-–—]\s*\d{4})', 0.88),
+    (FOR_PREFIX + r'\s+(' + CAR_BRAND_NAMES + r')\s+([A-Z][A-Za-z0-9]{1,5}(?:\s*/\s*[A-Z][A-Za-z0-9]{1,5})*)\s+(\d{4})', 0.85),
+    # "FOR MODEL YEAR" (无品牌, 使用独立车型名): REPLACEMENT FOR CADDY 2004
+    (FOR_PREFIX + r'\s+(' + CAR_MODEL_NAMES + r')\s+(\d{4}\s*[-–—]\s*\d{4})', 0.84),
+    (FOR_PREFIX + r'\s+(' + CAR_MODEL_NAMES + r')\s+(\d{4})', 0.82),
+    # "FOR MODEL YEAR" (2位年份): FOR Caddy 04-15
+    (FOR_PREFIX + r'\s+(' + CAR_MODEL_NAMES + r')\s+(\d{2}\s*[-–—]\s*\d{2,4}\+?)', 0.82),
+    # 品牌 + 车系 + 年份(无FOR): Honda Civic 16-20, Infiniti Q50 14-17
+    (r'\b(' + CAR_BRAND_NAMES + r')\s+([A-Z][A-Za-z0-9]{1,5}(?:\s*/\s*[A-Z][A-Za-z0-9]{1,5})*)\s+(\d{2}\s*[-–—]\s*\d{2,4}\+?)', 0.83),
+    # 品牌 + 车系 + 年份(4位): Honda Civic 2016-2020
+    (r'\b(' + CAR_BRAND_NAMES + r')\s+([A-Z][A-Za-z0-9]{1,5}(?:\s*/\s*[A-Z][A-Za-z0-9]{1,5})*)\s+(\d{4}\s*[-–—]\s*\d{4})', 0.83),
+    # 平台/底盘代码: BMW F01/F02/F03, BMW G20/G28
+    (r'\b(' + CAR_BRAND_NAMES + r')\s+([A-Z]\d{2,3}(?:\s*/\s*[A-Z]\d{2,3})*)', 0.84),
+    # 品牌 + 车系 (无年份): Honda Civic, Infiniti Q50
+    (r'\b(' + CAR_BRAND_NAMES + r')\s+([A-Z][A-Za-z0-9]{1,5}(?:\s*/\s*[A-Z][A-Za-z0-9]{1,5})*)', 0.78),
+    # "For" 关键词引导 (中文): 适用于宝马5系 2014-2017
+    (r'(适用于?|适配|适合|匹配)\s*[：:]*\s*(.+)', 0.78),
+    # 纯年份范围 (4位): 2014-2017
+    (r'\b(\d{4})\s*[-~–]\s*(\d{4})\b', 0.66),
+    # 纯年份范围 (2位): 16-20, 21+
+    (r'\b(\d{2})\s*[-~–]\s*(\d{2,4})\+?\b', 0.63),
 ]
 
 # ── 规格参数 ──
@@ -154,6 +195,16 @@ OEM_REF_PATTERNS = [
     (r'(OEM|REF|Cross\s*Ref|原厂编号|参考号|互换号)[\.:\s]*([A-Z0-9][\w\-–—]{4,20})', 0.82),
     (r'(O\.?E\.?M\.?|Ref\.?)\s*[：:]*\s*([\w\-–—]{5,20})', 0.78),
 ]
+
+# VW/Audi/德系原厂OE号模式 (应以oem_ref提取，不以oe_number提取)
+# 格式: 1T0807221, 7H0853651A, 2K5853677 (数字开头+字母+长数字)
+VW_OEM_PATTERN = re.compile(
+    r'\b([\d][A-Z]\d)\s*(\d{3})\s*(\d{3,4}[A-Z]*)\b', re.IGNORECASE
+)
+# 已合并格式: 1T0807221, 7H0853651
+VW_OEM_COMPACT = re.compile(
+    r'\b(\d[A-Z]\d{7,9}[A-Z]?)\b', re.IGNORECASE
+)
 
 # ── 每包数量 ──
 PACK_QTY_PATTERNS = [
@@ -211,6 +262,7 @@ class FieldExtractor:
         columns = self._detect_columns(text_blocks, page_data)
 
         # ── 为每列提取顶部车型和品牌 ──
+        # 扩大搜索范围到页面上半部 (50%), 适应不同排版
         column_vehicle = {}
         column_brand = {}
         for col_id, (col_x0, col_x1) in columns.items():
@@ -218,7 +270,7 @@ class FieldExtractor:
             page_h = ps[-1] if len(ps) >= 2 else 800
             top_blocks = [b for b in text_blocks
                           if col_x0 <= bbox_center(b["bbox"])[0] <= col_x1
-                          and b["bbox"][1] < page_h * 0.35]
+                          and b["bbox"][1] < page_h * 0.50]
             column_vehicle[col_id] = self._extract_top_vehicle(top_blocks)
             column_brand[col_id] = self._extract_top_brand(top_blocks)
 
@@ -341,6 +393,23 @@ class FieldExtractor:
             product["confidence_avg"] = round(sum(confidences) / max(len(confidences), 1), 2)
 
             products.append(product)
+
+        # ── 页面级品牌传播 ──
+        # 收集本页已检测到的品牌，将多数品牌传播给无品牌卡片
+        page_brands = [p["brand"]["value"] for p in products
+                       if p["brand"].get("value") and p["brand"].get("method") != "none"]
+        if page_brands and len(page_brands) >= 1:
+            brand_counts = Counter(page_brands)
+            dominant_brand, dominant_count = brand_counts.most_common(1)[0]
+            # 若多数品牌占本页产品的30%以上，传播给无品牌/低置信度产品
+            if dominant_count >= max(len(products) * 0.3, 1):
+                for p in products:
+                    if not p["brand"].get("value") or p["brand"].get("confidence", 0) < 0.5:
+                        p["brand"] = {
+                            "value": dominant_brand,
+                            "confidence": min(0.82, 0.75 + 0.05 * dominant_count),
+                            "method": "page_propagate",
+                        }
 
         return products
 
@@ -501,6 +570,48 @@ class FieldExtractor:
         if not oe_anchors:
             return []
 
+        # ── 锚点优先级分类 ──
+        # 高优先级: PZ-/SM-/BF- 前缀的产品编号 (供应商格式)
+        # 低优先级: VW/Audi风格原厂OE号 (数字开头+字母+数字, 如1T0807221)
+        # 当低优先级锚点靠近高优先级锚点时，合并到高优先级集群
+        HIGH_PRIORITY_OE = re.compile(
+            r'\b((?:PZ|SM|BF)[-\s]?[A-Z0-9][\w\-–—]{2,15})\b', re.IGNORECASE
+        )
+
+        def _oe_priority(oe_val: str) -> int:
+            """返回OE锚点优先级: 0=高(PZ/SM/BF), 1=低(VW风格), 2=其他"""
+            if HIGH_PRIORITY_OE.search(oe_val):
+                return 0
+            if VW_OEM_PATTERN.search(oe_val) or VW_OEM_COMPACT.search(oe_val):
+                return 1
+            return 2
+
+        # 对低优先级锚点：若同页有高优先级锚点且在垂直距离3行高内，则降级（不作为独立锚点）
+        high_anchors = [(ai, val) for ai, val in oe_anchors if _oe_priority(val) == 0]
+        if high_anchors:
+            font_sizes_pre = [b.get("font_size_avg", 10) for b in text_blocks if b.get("font_size_avg", 0) > 0]
+            avg_fs_pre = sum(font_sizes_pre) / max(len(font_sizes_pre), 1) if font_sizes_pre else 10
+            merge_radius = max(avg_fs_pre * 3.0, 30)  # 3行高的垂直距离
+            filtered_anchors = []
+            for ai, val in oe_anchors:
+                if _oe_priority(val) == 1:
+                    # 检查是否靠近任何高优先级锚点
+                    too_close = False
+                    abl = text_blocks[ai]
+                    ay = bbox_center(abl["bbox"])[1]
+                    for hai, _ in high_anchors:
+                        hay = bbox_center(text_blocks[hai]["bbox"])[1]
+                        if abs(ay - hay) < merge_radius:
+                            too_close = True
+                            break
+                    if too_close:
+                        continue  # 跳过此低优先级锚点
+                filtered_anchors.append((ai, val))
+            oe_anchors = filtered_anchors
+
+        if not oe_anchors:
+            return []
+
         # 计算归一化参数
         ps = page_data.get("page_size", [600, 800])
         page_w = ps[0] if len(ps) >= 1 else 600
@@ -593,6 +704,10 @@ class FieldExtractor:
 
     def _extract_oe_number(self, text: str) -> dict:
         """抽取OE号/产品编号"""
+        # 检测文本中是否已有高优先级供应商编号 (PZ-/SM-/BF-)
+        has_supplier_code = bool(
+            re.search(r'\b(?:PZ|SM|BF)[-\s]?[A-Z0-9]', text, re.IGNORECASE)
+        )
         candidates = []
         for pattern, base_conf in OE_PATTERNS:
             for match in re.finditer(pattern, text, re.IGNORECASE):
@@ -609,7 +724,10 @@ class FieldExtractor:
                     continue
                 # 置信度微调：更长编号 → 更高置信度
                 conf = min(0.95, base_conf + 0.01 * len(value))
-                candidates.append({"value": value, "confidence": round(conf, 2), "method": "regex"})
+                # 若文本中已有供应商格式编号，VW风格编号(数字开头+字母+数字)降置信度
+                if has_supplier_code and VW_OEM_COMPACT.search(value):
+                    conf -= 0.30  # 大幅降低，避免误选为产品OE号
+                candidates.append({"value": value, "confidence": round(max(0.10, conf), 2), "method": "regex"})
 
         # 去重（按value），选最高置信度
         best = self._dedup_candidates(candidates)
@@ -840,6 +958,26 @@ class FieldExtractor:
             if txt_normalized.upper() in VEHICLE_CODE_BLACKLIST:
                 continue
 
+            # ── 排除品牌词典匹配的文本块（避免品牌名被选为产品描述）──
+            is_brand_text = False
+            txt_lower_brand = txt.lower()
+            for brand_key in {**BRAND_DICT_CN, **BRAND_DICT_EN}:
+                brand_lower = brand_key.lower()
+                if len(brand_lower) <= 3:
+                    if re.search(r'\b' + re.escape(brand_lower) + r'\b', txt_lower_brand):
+                        # Short brand: check if this text is primarily the brand name
+                        remaining = re.sub(r'\b' + re.escape(brand_lower) + r'\b', '', txt_lower_brand, flags=re.IGNORECASE).strip()
+                        if len(remaining) < 8:  # Mostly just the brand name
+                            is_brand_text = True
+                            break
+                elif brand_lower in txt_lower_brand:
+                    remaining = txt_lower_brand.replace(brand_lower, '').strip()
+                    if len(remaining) < 8:  # Mostly just the brand name
+                        is_brand_text = True
+                        break
+            if is_brand_text:
+                continue
+
             # ── 排除OE引用（描述中引用其他产品编号）──
             # 如果文本块很短(<30字符)且主要是一个OE号引用，排除
             if len(txt) < 35:
@@ -967,12 +1105,26 @@ class FieldExtractor:
         return {"value": "", "confidence": 0.0, "method": "none"}
 
     def _extract_oem_ref(self, text: str) -> dict:
-        """抽取原厂参考号"""
+        """抽取原厂参考号（含VW/Audi风格零件号）"""
+        # 优先匹配关键词引导的OEM
         for pattern, base_conf in OEM_REF_PATTERNS:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 value = match.group(0).strip()
                 return {"value": value, "confidence": round(base_conf, 2), "method": "regex"}
+
+        # 匹配VW/Audi风格原厂零件号（无需OEM/REF关键词）
+        vw_candidates = []
+        for m in VW_OEM_PATTERN.finditer(text):
+            vw_candidates.append(m.group(0).replace(' ', ''))
+        for m in VW_OEM_COMPACT.finditer(text):
+            val = m.group(1)
+            if not any(val in c for c in vw_candidates):
+                vw_candidates.append(val)
+        if vw_candidates:
+            value = '; '.join(vw_candidates[:6])  # 最多6个
+            return {"value": value, "confidence": 0.80, "method": "vw_oem_pattern"}
+
         return {"value": "", "confidence": 0.0, "method": "none"}
 
     def _extract_pack_qty(self, text: str) -> dict:
@@ -1092,6 +1244,23 @@ def main():
 
         products = extractor.extract_from_page(normalized, page_num)
         all_products.extend(products)
+
+    # ── 跨页品牌传播 ──
+    # 有些PDF品牌只在特定页出现(如偶数页页眉)，需要传播到所有产品
+    all_brands = [p["brand"]["value"] for p in all_products
+                  if p["brand"].get("value") and p["brand"].get("method") != "none"]
+    if all_brands:
+        brand_counts = Counter(all_brands)
+        dominant_brand, dominant_count = brand_counts.most_common(1)[0]
+        # 若主导品牌占有品牌产品数的50%以上，传播到全文档
+        if dominant_count >= max(len(all_brands) * 0.5, 2):
+            for p in all_products:
+                if not p["brand"].get("value") or p["brand"].get("confidence", 0) < 0.5:
+                    p["brand"] = {
+                        "value": dominant_brand,
+                        "confidence": 0.78,
+                        "method": "cross_page_propagate",
+                    }
 
     total_time = time.time() - t0
 

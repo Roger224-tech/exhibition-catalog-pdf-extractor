@@ -65,45 +65,99 @@ FIELD_DEFINITIONS = [
 # these fields' region, lines are auto-distributed in order.
 TEXT_GROUP_FIELDS = ["oe_number", "description_1", "description_2", "description_3"]
 
-# ── Field config persistence ──
-FIELD_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "field_config.json")
+# ── Field config & template persistence ──
+FIELD_TEMPLATES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "field_templates.json")
 
-def load_field_config():
-    """Load custom field definitions from config file. Returns list or None."""
-    if os.path.exists(FIELD_CONFIG_PATH):
+DEFAULT_FIELD_DEFINITIONS = [
+    {"key": "brand",          "label": "品牌/制造商",    "editable": True},
+    {"key": "vehicle_fitment","label": "车型适配",       "editable": True},
+    {"key": "oe_number",      "label": "产品编号/OE号", "editable": True},
+    {"key": "description_1",  "label": "描述一",         "editable": True},
+    {"key": "description_2",  "label": "描述二",         "editable": True},
+    {"key": "description_3",  "label": "描述三/规格",    "editable": True},
+    {"key": "price",          "label": "价格",           "editable": True},
+    {"key": "oem_ref",        "label": "OEM参考号",      "editable": True},
+    {"key": "pack_qty",       "label": "每包数量",       "editable": True},
+]
+
+
+def load_templates():
+    """Load all templates from file. Returns (templates_dict, active_name)."""
+    if os.path.exists(FIELD_TEMPLATES_PATH):
         try:
-            with open(FIELD_CONFIG_PATH, "r", encoding="utf-8") as f:
+            with open(FIELD_TEMPLATES_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if isinstance(data, list) and len(data) > 0:
-                # Validate each entry has required keys
-                for item in data:
-                    if "key" not in item or "label" not in item:
-                        return None
-                return data
+            templates = data.get("templates", {})
+            active = data.get("active_template", "")
+            # Validate: each template must be a non-empty list with key/label
+            valid = {}
+            for name, fields in templates.items():
+                if isinstance(fields, list) and all(
+                    isinstance(f, dict) and "key" in f and "label" in f for f in fields
+                ):
+                    valid[name] = fields
+            if valid:
+                return valid, active if active in valid else ""
         except Exception:
             pass
-    return None
 
-def save_field_config(definitions: list):
-    """Save field definitions to config file."""
+    # Migration: try old field_config.json
+    OLD_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "field_config.json")
+    if os.path.exists(OLD_CONFIG):
+        try:
+            with open(OLD_CONFIG, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list) and len(data) > 0 and all(
+                isinstance(f, dict) and "key" in f and "label" in f for f in data
+            ):
+                templates = {"默认模板": data}
+                save_templates(templates, "默认模板")
+                return templates, "默认模板"
+        except Exception:
+            pass
+
+    return {}, ""
+
+
+def save_templates(templates: dict, active_name: str):
+    """Save all templates to file."""
     try:
-        with open(FIELD_CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(definitions, f, ensure_ascii=False, indent=2)
+        with open(FIELD_TEMPLATES_PATH, "w", encoding="utf-8") as f:
+            json.dump({"active_template": active_name, "templates": templates},
+                      f, ensure_ascii=False, indent=2)
         return True
     except Exception:
         return False
 
-# Load custom config on module init
-_custom = load_field_config()
+
+def load_active_template():
+    """Load the currently active template field definitions. Returns list or None."""
+    templates, active = load_templates()
+    if active and active in templates:
+        return templates[active]
+    return None
+
+
+def save_active_template(definitions: list):
+    """Save field definitions as a template (legacy path for auto-save)."""
+    templates, _ = load_templates()
+    templates["默认模板"] = definitions
+    return save_templates(templates, "默认模板")
+
+
+# Load active template on module init
+_custom = load_active_template()
 if _custom:
     FIELD_DEFINITIONS = _custom
+else:
+    FIELD_DEFINITIONS = list(DEFAULT_FIELD_DEFINITIONS)
 
 CONFIDENCE_COLORS = {
-    "high":   "#4CAF50",  # >= 0.8  green
-    "medium": "#FF9800",  # >= 0.6  orange
-    "low":    "#F44336",  # < 0.6   red
-    "manual": "#2196F3",  # manual edit  blue
-    "none":   "#9E9E9E",  # no data  gray
+    "high":   "#34C759",  # >= 0.8  Apple绿
+    "medium": "#FF9500",  # >= 0.6  Apple橙
+    "low":    "#FF3B30",  # < 0.6   Apple红
+    "manual": "#007AFF",  # manual edit  Apple蓝
+    "none":   "#C7C7CC",  # no data  浅灰
 }
 
 def get_confidence_color(conf, method=""):
@@ -418,10 +472,10 @@ class ProductListPanel(ttk.Frame):
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
 
         # Configure row tags
-        self.tree.tag_configure("high_conf", background="#E8F5E9")
-        self.tree.tag_configure("med_conf", background="#FFF3E0")
-        self.tree.tag_configure("low_conf", background="#FFEBEE")
-        self.tree.tag_configure("edited", foreground="#2196F3")
+        self.tree.tag_configure("high_conf", background="#E8F8ED", foreground="#1D7A3A")
+        self.tree.tag_configure("med_conf", background="#FFF3E0", foreground="#C77600")
+        self.tree.tag_configure("low_conf", background="#FFEBEE", foreground="#D42A20")
+        self.tree.tag_configure("edited", foreground="#007AFF")
 
         self.all_products = []
         self.edit_state = {}
@@ -600,26 +654,76 @@ class FieldEditorPanel(ttk.Frame):
         self.current_product = None
         self.on_save_callback = None
         self.on_navigate_callback = None
+        self.on_re_select_image_callback = None
 
         # Product header
-        self.header_label = ttk.Label(self, text="选择产品以编辑", font=("Microsoft YaHei", 11, "bold"))
-        self.header_label.pack(fill=tk.X, padx=8, pady=4)
+        self.header_label = ttk.Label(self, text="选择产品以编辑",
+                                      font=("Microsoft YaHei", 11, "bold"))
+        self.header_label.pack(fill=tk.X, padx=8, pady=(8, 4))
 
         # Divider
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4)
+
+        # ── Product image area (non-scrollable, always visible) ──
+        self.image_frame = ttk.Frame(self, style="Panel.TFrame")
+        self.image_frame.pack(fill=tk.X, padx=8, pady=4)
+
+        # Thumbnail placeholder
+        self.image_thumb_label = ttk.Label(
+            self.image_frame, text="无图片",
+            anchor=tk.CENTER, font=("Microsoft YaHei", 9),
+        )
+        self.image_thumb_label.pack(side=tk.LEFT, padx=6, pady=6)
+
+        # Image info + button
+        img_info_frame = ttk.Frame(self.image_frame)
+        img_info_frame.pack(side=tk.LEFT, fill=tk.Y, padx=4, pady=4)
+
+        self.image_info_label = ttk.Label(
+            img_info_frame, text="产品图片",
+            font=("Microsoft YaHei", 9, "bold"),
+        )
+        self.image_info_label.pack(anchor=tk.W)
+
+        self.image_method_label = ttk.Label(
+            img_info_frame, text="",
+            font=("Microsoft YaHei", 9), foreground="#86868B",
+        )
+        self.image_method_label.pack(anchor=tk.W)
+
+        self.re_select_image_btn = ttk.Button(
+            img_info_frame, text="📷 重新框选图片",
+            command=self._on_re_select_image,
+        )
+        self.re_select_image_btn.pack(anchor=tk.W, pady=(4, 0))
+
+        # Photo reference for thumbnail display
+        self._thumb_photo = None
+        self._thumb_size = (150, 120)  # max (w, h) for thumbnail
+
+        # Divider after image
         ttk.Separator(self, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4)
 
         # Scrollable field area
         canvas_frame = ttk.Frame(self)
         canvas_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=2)
 
-        self.field_canvas = tk.Canvas(canvas_frame, highlightthickness=0, height=350)
+        self.field_canvas = tk.Canvas(canvas_frame, highlightthickness=0,
+                                       bg="#FFFFFF")
         field_scrollbar = ttk.Scrollbar(canvas_frame, orient=tk.VERTICAL, command=self.field_canvas.yview)
         self.field_frame = ttk.Frame(self.field_canvas)
 
         self.field_frame.bind("<Configure>", lambda e: self.field_canvas.configure(
             scrollregion=self.field_canvas.bbox("all")))
-        self.field_canvas.create_window((0, 0), window=self.field_frame, anchor=tk.NW)
+        self._canvas_window_id = self.field_canvas.create_window((0, 0), window=self.field_frame, anchor=tk.NW)
         self.field_canvas.configure(yscrollcommand=field_scrollbar.set)
+
+        # Adaptive sizing: resize inner frame width to fill canvas, update scrollregion
+        def _on_canvas_resize(event):
+            self.field_canvas.itemconfig(self._canvas_window_id, width=event.width)
+            # Also constrain inner frame's requested width so Entry widgets expand properly
+            self.field_frame.configure(width=event.width)
+        self.field_canvas.bind("<Configure>", _on_canvas_resize, add="+")
 
         self.field_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         field_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -666,22 +770,27 @@ class FieldEditorPanel(ttk.Frame):
         self.conf_label = ttk.Label(self.field_frame, text="0%")
         self.conf_label.grid(row=row_offset, column=3, sticky=tk.W, padx=4)
 
-        # Action buttons
+        # Action buttons — flow layout (wraps to multiple rows when narrow)
         row_offset += 1
-        btn_frame = ttk.Frame(self.field_frame)
-        btn_frame.grid(row=row_offset, column=0, columnspan=4, sticky=tk.EW, padx=4, pady=6)
+        self.btn_container = ttk.Frame(self.field_frame)
+        self.btn_container.grid(row=row_offset, column=0, columnspan=4, sticky=tk.EW, padx=4, pady=6)
 
-        self.save_btn = ttk.Button(btn_frame, text="💾 保存产品", command=self._on_save)
-        self.save_btn.pack(side=tk.LEFT, padx=2)
-        self.reset_btn = ttk.Button(btn_frame, text="↩ 重置", command=self._on_reset)
-        self.reset_btn.pack(side=tk.LEFT, padx=2)
+        # Create button widgets and store ordered list for flow layout
+        self._btn_widgets = []
+        self.save_btn = ttk.Button(self.btn_container, text="💾 保存产品", command=self._on_save)
+        self._btn_widgets.append(self.save_btn)
+        self.reset_btn = ttk.Button(self.btn_container, text="↩ 重置", command=self._on_reset)
+        self._btn_widgets.append(self.reset_btn)
 
-        ttk.Label(btn_frame, text="|").pack(side=tk.LEFT, padx=4)
+        sep = ttk.Label(self.btn_container, text="")
+        self._btn_widgets.append(sep)
 
-        self.prev_btn = ttk.Button(btn_frame, text="◀ 上条", command=lambda: self._navigate(-1))
-        self.prev_btn.pack(side=tk.LEFT, padx=2)
-        self.next_btn = ttk.Button(btn_frame, text="下条 ▶", command=lambda: self._navigate(1))
-        self.next_btn.pack(side=tk.LEFT, padx=2)
+        self.prev_btn = ttk.Button(self.btn_container, text="◀ 上条", command=lambda: self._navigate(-1))
+        self._btn_widgets.append(self.prev_btn)
+        self.next_btn = ttk.Button(self.btn_container, text="下条 ▶", command=lambda: self._navigate(1))
+        self._btn_widgets.append(self.next_btn)
+
+        self.btn_container.bind("<Configure>", self._reflow_buttons)
 
     def _create_field_row(self, field_def: dict, row: int):
         """Create a single field row with label, entry, confidence dot, and re-extract button."""
@@ -689,7 +798,8 @@ class FieldEditorPanel(ttk.Frame):
         label_text = field_def["label"]
 
         # Label
-        label = ttk.Label(self.field_frame, text=label_text + ":", font=("Microsoft YaHei", 9))
+        label = ttk.Label(self.field_frame, text=label_text + ":",
+                         font=("Microsoft YaHei", 9))
         label.grid(row=row, column=0, sticky=tk.W, padx=4, pady=2)
 
         # Entry — click to enter PDF selection mode for re-extraction
@@ -707,19 +817,82 @@ class FieldEditorPanel(ttk.Frame):
 
         # Re-extract button: dashed-box icon on a tiny Canvas
         re_canvas = tk.Canvas(self.field_frame, width=22, height=22,
-                              highlightthickness=1, highlightbackground="#BDBDBD",
-                              cursor="crosshair")
+                              highlightthickness=1, highlightbackground="#E5E5EA",
+                              bg="#FFFFFF", cursor="crosshair")
         re_canvas.grid(row=row, column=3, sticky=tk.W, padx=1, pady=2)
         # Draw dashed rectangle icon
-        re_canvas.create_rectangle(3, 3, 19, 19, outline="#757575", width=2, dash=(3, 2), tags=("icon",))
-        re_canvas.create_line(10, 8, 10, 14, fill="#757575", width=1, tags=("icon",))  # crosshair hint
-        re_canvas.create_line(7, 11, 13, 11, fill="#757575", width=1, tags=("icon",))
+        re_canvas.create_rectangle(3, 3, 19, 19, outline="#86868B", width=2, dash=(3, 2), tags=("icon",))
+        re_canvas.create_line(10, 8, 10, 14, fill="#86868B", width=1, tags=("icon",))  # crosshair hint
+        re_canvas.create_line(7, 11, 13, 11, fill="#86868B", width=1, tags=("icon",))
         re_canvas.bind("<Button-1>", lambda e, k=key: self._on_re_extract(k))
-        re_canvas.bind("<Enter>", lambda e, c=re_canvas: c.configure(highlightbackground="#2196F3"))
-        re_canvas.bind("<Leave>", lambda e, c=re_canvas: c.configure(highlightbackground="#BDBDBD"))
+        re_canvas.bind("<Enter>", lambda e, c=re_canvas: c.configure(highlightbackground="#007AFF"))
+        re_canvas.bind("<Leave>", lambda e, c=re_canvas: c.configure(highlightbackground="#E5E5EA"))
         self.re_extract_buttons[key] = re_canvas
 
         self.field_frame.columnconfigure(1, weight=1)
+
+    def _reflow_buttons(self, event=None):
+        """Reflow action buttons: single row if they fit, wrap to 2 rows if not."""
+        if not hasattr(self, '_btn_widgets') or not self._btn_widgets:
+            return
+        container_w = self.btn_container.winfo_width()
+        if container_w < 10:
+            return
+
+        pad_x, pad_y = 3, 3
+        gap_x = 6  # horizontal gap between button groups (separator)
+
+        # Measure each widget's natural width
+        widths = []
+        heights = []
+        for w in self._btn_widgets:
+            w.update_idletasks()
+            widths.append(w.winfo_reqwidth())
+            heights.append(w.winfo_reqheight())
+        row_h = max(heights) if heights else 30
+
+        # Try single row: save_btn + reset_btn + gap + prev_btn + next_btn
+        # Group 1: save + reset (indices 0-1), separator at 2, Group 2: prev + next (indices 3-4)
+        g1_w = widths[0] + pad_x + widths[1]  # save + reset
+        g2_w = widths[3] + pad_x + widths[4]  # prev + next
+        single_row_w = g1_w + gap_x + g2_w + pad_x * 2
+
+        if single_row_w <= container_w:
+            # All fit in one row
+            x = pad_x
+            y = pad_y
+            for i, w in enumerate(self._btn_widgets):
+                if i == 2:  # separator
+                    x += gap_x
+                    continue
+                w.place(x=x, y=y, width=widths[i], height=row_h)
+                x += widths[i] + pad_x
+            total_h = row_h + pad_y * 2
+        else:
+            # Two rows: save+reset on row 0, prev+next on row 1
+            g1_total = g1_w + pad_x
+            g2_total = g2_w + pad_x
+            # Row 0: save + reset
+            x = pad_x
+            y = pad_y
+            for i in (0, 1):
+                self._btn_widgets[i].place(x=x, y=y, width=widths[i], height=row_h)
+                x += widths[i] + pad_x
+            # Hide separator
+            self._btn_widgets[2].place_forget()
+            # Row 1: prev + next
+            x = pad_x
+            y = row_h + pad_y * 2
+            for i in (3, 4):
+                self._btn_widgets[i].place(x=x, y=y, width=widths[i], height=row_h)
+                x += widths[i] + pad_x
+            total_h = row_h * 2 + pad_y * 3
+
+        # Update container height so scrollregion accounts for it
+        self.btn_container.configure(height=total_h)
+        # Refresh canvas scrollregion after reflow
+        self.field_frame.update_idletasks()
+        self.field_canvas.configure(scrollregion=self.field_canvas.bbox("all"))
 
     def rebuild_fields(self):
         """Destroy and recreate all field rows from FIELD_DEFINITIONS (after config change)."""
@@ -752,7 +925,10 @@ class FieldEditorPanel(ttk.Frame):
         self.raw_text_toggle.grid(row=row_offset, column=0, columnspan=4, sticky=tk.W, padx=4, pady=2)
 
         self.raw_text_display = tk.Text(self.field_frame, height=4, wrap=tk.WORD,
-                                         font=("Consolas", 9), state=tk.DISABLED)
+                                         font=("Consolas", 9), state=tk.DISABLED,
+                                         bg="#F9F9FC", fg="#1D1D1F", insertbackground="#1D1D1F",
+                                         relief="solid", borderwidth=1,
+                                         highlightthickness=0, padx=4, pady=4)
         self.raw_text_display.grid(row=row_offset + 1, column=0, columnspan=4,
                                     sticky=tk.EW, padx=4, pady=2)
         self.raw_text_display.grid_remove()
@@ -766,31 +942,41 @@ class FieldEditorPanel(ttk.Frame):
         self.conf_label.grid(row=row_offset, column=3, sticky=tk.W, padx=4)
 
         row_offset += 1
-        btn_frame = ttk.Frame(self.field_frame)
-        btn_frame.grid(row=row_offset, column=0, columnspan=4, sticky=tk.EW, padx=4, pady=6)
+        self.btn_container = ttk.Frame(self.field_frame)
+        self.btn_container.grid(row=row_offset, column=0, columnspan=4, sticky=tk.EW, padx=4, pady=6)
 
-        self.save_btn = ttk.Button(btn_frame, text="💾 保存产品", command=self._on_save)
-        self.save_btn.pack(side=tk.LEFT, padx=2)
-        self.reset_btn = ttk.Button(btn_frame, text="↩ 重置", command=self._on_reset)
-        self.reset_btn.pack(side=tk.LEFT, padx=2)
+        self._btn_widgets = []
+        self.save_btn = ttk.Button(self.btn_container, text="💾 保存产品", command=self._on_save)
+        self._btn_widgets.append(self.save_btn)
+        self.reset_btn = ttk.Button(self.btn_container, text="↩ 重置", command=self._on_reset)
+        self._btn_widgets.append(self.reset_btn)
 
-        ttk.Label(btn_frame, text="|").pack(side=tk.LEFT, padx=4)
+        sep = ttk.Label(self.btn_container, text="")
+        self._btn_widgets.append(sep)
 
-        self.prev_btn = ttk.Button(btn_frame, text="◀ 上条", command=lambda: self._navigate(-1))
-        self.prev_btn.pack(side=tk.LEFT, padx=2)
-        self.next_btn = ttk.Button(btn_frame, text="下条 ▶", command=lambda: self._navigate(1))
-        self.next_btn.pack(side=tk.LEFT, padx=2)
+        self.prev_btn = ttk.Button(self.btn_container, text="◀ 上条", command=lambda: self._navigate(-1))
+        self._btn_widgets.append(self.prev_btn)
+        self.next_btn = ttk.Button(self.btn_container, text="下条 ▶", command=lambda: self._navigate(1))
+        self._btn_widgets.append(self.next_btn)
 
-        # Re-populate if a product is currently shown
-        if self.current_product is not None and self.current_product_idx is not None:
-            # We need the edit_state from the app — caller should re-populate
-            pass
+        self.btn_container.bind("<Configure>", self._reflow_buttons)
 
-    def set_callbacks(self, on_save=None, on_navigate=None, on_re_extract=None):
-        """Set callbacks for save, navigation, and re-extract actions."""
+        # Refresh scroll region after widget recreation
+        self.field_frame.update_idletasks()
+        # Trigger initial button layout
+        self._reflow_buttons()
+        self.field_canvas.configure(scrollregion=self.field_canvas.bbox("all"))
+        # Re-apply canvas window width so Entry widgets fill available space
+        cw = self.field_canvas.winfo_width()
+        if cw > 1:
+            self.field_canvas.itemconfig(self._canvas_window_id, width=cw)
+
+    def set_callbacks(self, on_save=None, on_navigate=None, on_re_extract=None, on_re_select_image=None):
+        """Set callbacks for save, navigation, re-extract, and image re-select actions."""
         self.on_save_callback = on_save
         self.on_navigate_callback = on_navigate
         self.on_re_extract_callback = on_re_extract
+        self.on_re_select_image_callback = on_re_select_image
 
     def populate(self, product: dict, product_idx: int, edit_state: dict):
         """Fill the field editor with product data."""
@@ -843,6 +1029,9 @@ class FieldEditorPanel(ttk.Frame):
         self.conf_progress["value"] = conf_avg * 100
         self.conf_label.config(text=f"{conf_avg:.0%}")
 
+        # Product image
+        self._update_image_display(product, product_idx, edit_state)
+
         # Enable buttons
         self.save_btn.config(state=tk.NORMAL)
         self.reset_btn.config(state=tk.NORMAL)
@@ -860,6 +1049,7 @@ class FieldEditorPanel(ttk.Frame):
         self.conf_label.config(text="0%")
         self.save_btn.config(state=tk.DISABLED)
         self.reset_btn.config(state=tk.DISABLED)
+        self._clear_image_display()
 
     def get_edited_values(self) -> dict:
         """Get all current field values from entry widgets."""
@@ -891,6 +1081,98 @@ class FieldEditorPanel(ttk.Frame):
         """Handle re-extract button click - enter PDF selection mode."""
         if self.on_re_extract_callback:
             self.on_re_extract_callback(field_key)
+
+    # ─── Product Image Display ───
+
+    def set_images_dir(self, images_dir: str):
+        """Set the directory where product images are stored."""
+        self._images_dir = images_dir
+
+    def _update_image_display(self, product: dict, product_idx: int, edit_state: dict):
+        """Show the product's matched image as a thumbnail."""
+        # Check for manually selected image in edit_state
+        manual_image = None
+        if product_idx in edit_state and "_product_image" in edit_state[product_idx]:
+            manual_image = edit_state[product_idx]["_product_image"]
+
+        # Find matched image file
+        image_path = None
+        method_text = ""
+        conf_text = ""
+
+        if manual_image and os.path.isfile(manual_image):
+            image_path = manual_image
+            method_text = "手动框选"
+            conf_text = ""
+        else:
+            matched_images = product.get("_matched_images", [])
+            if matched_images:
+                mi = matched_images[0]  # Show first matched image
+                filename = mi.get("filename", "")
+                method = mi.get("method", "")
+                conf = mi.get("confidence", 0)
+
+                img_dir = getattr(self, "_images_dir", "")
+                if img_dir and filename:
+                    candidate = os.path.join(img_dir, filename)
+                    if os.path.isfile(candidate):
+                        image_path = candidate
+                if not image_path and img_dir and filename:
+                    # Try in subfolder
+                    pdf_name = os.path.basename(os.path.dirname(img_dir))
+                    candidate = os.path.join(img_dir, pdf_name + "_images", filename)
+                    if os.path.isfile(candidate):
+                        image_path = candidate
+
+                method_map = {
+                    "containment": "空间包含",
+                    "nearest_distance": "最近距离",
+                    "vertical_alignment": "垂直对齐",
+                    "reading_order": "阅读顺序",
+                }
+                method_text = method_map.get(method, method)
+                conf_text = f" • {conf:.0%}"
+
+        if image_path:
+            try:
+                pil_img = Image.open(image_path)
+                # Calculate thumbnail size preserving aspect ratio
+                max_w, max_h = self._thumb_size
+                pil_img.thumbnail((max_w, max_h), Image.LANCZOS)
+                self._thumb_photo = ImageTk.PhotoImage(pil_img)
+                self.image_thumb_label.configure(
+                    image=self._thumb_photo, text="",
+                    relief=tk.FLAT, borderwidth=0,
+                )
+                self.image_info_label.config(text="产品图片")
+                self.image_method_label.config(
+                    text=f"{method_text}{conf_text}"
+                )
+            except Exception as e:
+                self._clear_image_display()
+                self.image_info_label.config(text=f"图片加载失败: {e}")
+        else:
+            self._clear_image_display()
+            if matched_images := product.get("_matched_images", []):
+                filename = matched_images[0].get("filename", "")
+                self.image_info_label.config(text="产品图片 (文件未找到)")
+                self.image_method_label.config(text=filename)
+            else:
+                self.image_info_label.config(text="产品图片 (未关联)")
+                self.image_method_label.config(text="")
+
+    def _clear_image_display(self):
+        """Reset image area to placeholder."""
+        self._thumb_photo = None
+        self.image_thumb_label.configure(
+            image="", text="无图片",
+            relief=tk.GROOVE, borderwidth=1,
+        )
+
+    def _on_re_select_image(self):
+        """Handle re-select image button click."""
+        if self.on_re_select_image_callback and self.current_product_idx is not None:
+            self.on_re_select_image_callback(self.current_product_idx)
 
     def highlight_re_extract_button(self, field_key: str, active: bool):
         """Highlight/unhighlight the re-extract canvas button for a field."""
@@ -1000,8 +1282,8 @@ class PipelineRunner:
 
             # Step 4: Image matching (per-page)
             self.queue.put(("progress", "Step 3/4: 图片关联..."))
+            all_matches = {}
             try:
-                all_matches = {}
                 for page_data in parsed.get("pages", []):
                     page_num = page_data.get("page_num", 1)
                     page_imgs = page_data.get("images", [])
@@ -1012,6 +1294,25 @@ class PipelineRunner:
                             all_matches[str(page_num)] = matches
             except Exception as e:
                 self.queue.put(("warning", f"图片关联失败: {e}"))
+
+            # ── Augment products with matched image info ──
+            for page_matches in all_matches.values():
+                for match in page_matches:
+                    global_idx = match.get("product_idx")
+                    if global_idx is not None and global_idx < len(all_products):
+                        product = all_products[global_idx]
+                        if "_matched_images" not in product:
+                            product["_matched_images"] = []
+                        xref = match.get("image_xref", match.get("image_idx", 0))
+                        ext = match.get("image_ext", "jpeg")
+                        filename = f"p{product.get('page', 0):03d}_xref{xref}.{ext}"
+                        product["_matched_images"].append({
+                            "xref": xref,
+                            "filename": filename,
+                            "bbox": match.get("image_bbox", []),
+                            "confidence": match.get("confidence", 0),
+                            "method": match.get("method", ""),
+                        })
 
             if self.cancelled:
                 return
@@ -1032,7 +1333,7 @@ class PipelineRunner:
             # Excel export
             excel_path = os.path.join(step_output, f"{pdf_name}_output.xlsx")
             try:
-                step5_export_to_excel(all_products, all_matches, images_dir, excel_path, image_mode="path")
+                step5_export_to_excel(all_products, all_matches, images_dir, excel_path, image_mode="embed")
             except Exception as e:
                 self.queue.put(("warning", f"Excel导出失败: {e}"))
 
@@ -1041,12 +1342,13 @@ class PipelineRunner:
                 "total_pages": len(parsed.get("pages", [])),
                 "total_products": len(all_products),
                 "total_images": sum(len(p.get("images", [])) for p in parsed.get("pages", [])),
+                "matched_images": sum(len(v) for v in all_matches.values()),
                 "avg_confidence": round(
                     sum(p.get("confidence_avg", 0) for p in all_products) / max(len(all_products), 1), 2
                 ) if all_products else 0,
             }
 
-            self.queue.put(("done", all_products, report, fields_path, excel_path, images_dir))
+            self.queue.put(("done", all_products, report, fields_path, excel_path, images_dir, all_matches))
 
         except Exception as e:
             import traceback
@@ -1061,7 +1363,7 @@ class PipelineRunner:
         report = {
             "total_pages": len(set(p.get("page", 1) for p in products)),
             "total_products": len(products),
-            "total_images": 0,
+            "total_images": sum(len(p.get("_matched_images", [])) for p in products),
             "avg_confidence": round(
                 sum(p.get("confidence_avg", 0) for p in products) / max(len(products), 1), 2
             ) if products else 0,
@@ -1072,7 +1374,27 @@ class PipelineRunner:
         images_dir = os.path.join(json_dir, f"{pdf_name}_images")
         if not os.path.isdir(images_dir):
             images_dir = os.path.join(json_dir, pdf_name, f"{pdf_name}_images")
-        return products, report, json_path, images_dir
+
+        # Reconstruct all_matches from products' _matched_images
+        all_matches = {}
+        for global_idx, p in enumerate(products):
+            matched_imgs = p.get("_matched_images", [])
+            if not matched_imgs:
+                continue
+            page = str(p.get("page", 1))
+            if page not in all_matches:
+                all_matches[page] = []
+            for mi in matched_imgs:
+                all_matches[page].append({
+                    "product_idx": global_idx,
+                    "image_idx": mi.get("xref", 0),
+                    "image_xref": mi.get("xref", 0),
+                    "image_bbox": mi.get("bbox", []),
+                    "image_ext": mi.get("filename", "").rsplit(".", 1)[-1] if mi.get("filename") else "jpeg",
+                    "confidence": mi.get("confidence", 0),
+                    "method": mi.get("method", ""),
+                })
+        return products, report, json_path, images_dir, all_matches
 
 
 # ═════════════════════════════════════════════════════
@@ -1084,21 +1406,29 @@ class PipelineRunner:
 # ═════════════════════════════════════════════════════
 
 class FieldConfigDialog(tk.Toplevel):
-    """Modal dialog for editing global field definitions."""
+    """Modal dialog for editing field definitions with template support."""
 
-    def __init__(self, parent, current_defs: list):
+    def __init__(self, parent, current_defs: list, templates: dict = None, active_name: str = ""):
         super().__init__(parent)
         self.title("全局字段配置")
-        self.geometry("520x420")
+        self.geometry("620x540")
         self.resizable(True, True)
-        self.minsize(420, 300)
+        self.minsize(520, 400)
         self.transient(parent)
         self.grab_set()
 
-        self.result = None  # Will hold the new definitions on save
+        # Template state
+        self.templates = dict(templates) if templates else {}
+        if not self.templates:
+            self.templates = {"默认模板": list(DEFAULT_FIELD_DEFINITIONS)}
+        self.active_name = active_name if active_name in self.templates else list(self.templates.keys())[0]
+        # Ensure current defs are saved to active template before editing
+        self.templates[self.active_name] = [dict(d) for d in current_defs]
+
+        self.result = None  # Will hold (definitions, templates, active_name) on save
 
         # Working copy
-        self.defs = [dict(d) for d in current_defs]  # deep copy each dict
+        self.defs = [dict(d) for d in self.templates[self.active_name]]
 
         self._build_ui()
         self._populate_list()
@@ -1112,10 +1442,35 @@ class FieldConfigDialog(tk.Toplevel):
         self.wait_window()
 
     def _build_ui(self):
-        """Build the dialog layout."""
-        # Top: listbox (left) + detail editor (right)
+        """Build the dialog layout with template selector."""
+        # ── Top: Template selector ──
+        template_frame = ttk.Frame(self)
+        template_frame.pack(fill=tk.X, padx=8, pady=(8, 0))
+
+        ttk.Label(template_frame, text="当前模板:",
+                  font=("Microsoft YaHei", 9, "bold")).pack(side=tk.LEFT)
+
+        self.template_var = tk.StringVar(value=self.active_name)
+        self.template_combo = ttk.Combobox(
+            template_frame, textvariable=self.template_var,
+            values=list(self.templates.keys()), state="readonly", width=16,
+        )
+        self.template_combo.pack(side=tk.LEFT, padx=4)
+        self.template_combo.bind("<<ComboboxSelected>>", self._on_template_select)
+
+        ttk.Button(template_frame, text="另存为...",
+                   command=self._save_as_template, width=8).pack(side=tk.LEFT, padx=2)
+        ttk.Button(template_frame, text="删除",
+                   command=self._delete_template, width=6).pack(side=tk.LEFT, padx=2)
+
+        ttk.Label(template_frame, text="切换模板会丢弃未保存的修改",
+                  font=("Microsoft YaHei", 8), foreground="#86868B").pack(side=tk.RIGHT)
+
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=8, pady=6)
+
+        # ── Main: listbox (left) + detail editor (right) ──
         main_frame = ttk.Frame(self)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=0)
 
         # Left: field list
         left_frame = ttk.Frame(main_frame)
@@ -1127,7 +1482,10 @@ class FieldConfigDialog(tk.Toplevel):
         list_frame.pack(fill=tk.BOTH, expand=True, pady=2)
 
         self.listbox = tk.Listbox(list_frame, font=("Microsoft YaHei", 9),
-                                   selectmode=tk.SINGLE, exportselection=False)
+                                   selectmode=tk.SINGLE, exportselection=False,
+                                   bg="#FFFFFF", fg="#1D1D1F", selectbackground="#007AFF",
+                                   selectforeground="#FFFFFF", relief="solid",
+                                   highlightthickness=1, highlightbackground="#E5E5EA")
         list_scroll = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.listbox.yview)
         self.listbox.configure(yscrollcommand=list_scroll.set)
         self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -1163,22 +1521,32 @@ class FieldConfigDialog(tk.Toplevel):
         ttk.Checkbutton(right_frame, text="可编辑", variable=self.editable_var,
                         command=self._on_detail_change).grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=4)
 
-        ttk.Label(right_frame, text="修改Key或标签后自动更新列表", font=("Microsoft YaHei", 8),
-                  foreground="gray").grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=4)
+        ttk.Label(right_frame, text="修改Key或标签后自动更新列表", font=("Microsoft YaHei", 9),
+                  foreground="#86868B").grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=4)
 
         right_frame.columnconfigure(1, weight=1)
 
-        # Bottom: action buttons
+        # ── Bottom: action buttons ──
         bottom_frame = ttk.Frame(self)
-        bottom_frame.pack(fill=tk.X, padx=8, pady=(0, 8))
+        bottom_frame.pack(fill=tk.X, padx=8, pady=(4, 8))
 
-        ttk.Label(bottom_frame, text="提示: 字段Key不可重复，修改后会影响导出JSON的字段名",
-                  font=("Microsoft YaHei", 8), foreground="gray").pack(side=tk.LEFT)
+        # Hint / status feedback
+        self.status_hint = ttk.Label(bottom_frame, text="Key不可重复",
+                                     font=("Microsoft YaHei", 9), foreground="#86868B")
+        self.status_hint.pack(side=tk.LEFT)
 
-        ttk.Button(bottom_frame, text="恢复默认", command=self._reset_defaults).pack(side=tk.LEFT, padx=4)
-        ttk.Separator(bottom_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=2)
-        ttk.Button(bottom_frame, text="取消", command=self.destroy).pack(side=tk.RIGHT, padx=2)
-        ttk.Button(bottom_frame, text="✓ 保存配置", command=self._on_save).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(bottom_frame, text="恢复默认", command=self._reset_defaults,
+                   width=9).pack(side=tk.LEFT, padx=4)
+
+        # Right-aligned action buttons (ordered right-to-left in pack)
+        ttk.Button(bottom_frame, text="取消", command=self.destroy,
+                   width=8).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(bottom_frame, text="确定", command=self._on_confirm,
+                   width=8).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(bottom_frame, text="应用", command=self._on_apply,
+                   width=8).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(bottom_frame, text="保存模板", command=self._on_save_template,
+                   width=10).pack(side=tk.RIGHT, padx=2)
 
     def _populate_list(self):
         """Fill the listbox from self.defs."""
@@ -1275,18 +1643,7 @@ class FieldConfigDialog(tk.Toplevel):
     def _reset_defaults(self):
         """Reset to default field definitions."""
         if messagebox.askyesno("恢复默认", "确定要恢复为默认字段配置吗？\n当前修改将丢失。", parent=self):
-            default_defs = [
-                {"key": "brand",          "label": "品牌/制造商",    "editable": True},
-                {"key": "vehicle_fitment","label": "车型适配",       "editable": True},
-                {"key": "oe_number",      "label": "产品编号/OE号", "editable": True},
-                {"key": "description_1",  "label": "描述一",         "editable": True},
-                {"key": "description_2",  "label": "描述二",         "editable": True},
-                {"key": "description_3",  "label": "描述三/规格",    "editable": True},
-                {"key": "price",          "label": "价格",           "editable": True},
-                {"key": "oem_ref",        "label": "OEM参考号",      "editable": True},
-                {"key": "pack_qty",       "label": "每包数量",       "editable": True},
-            ]
-            self.defs = [dict(d) for d in default_defs]
+            self.defs = [dict(d) for d in DEFAULT_FIELD_DEFINITIONS]
             self._populate_list()
 
     def _validate_keys(self) -> bool:
@@ -1301,12 +1658,126 @@ class FieldConfigDialog(tk.Toplevel):
                 return False
         return True
 
-    def _on_save(self):
-        """Validate and save."""
+    def _on_save_template(self):
+        """Save current definitions to the active template (stay in dialog)."""
         if not self._validate_keys():
             return
-        self.result = [dict(d) for d in self.defs]
+        self.templates[self.active_name] = [dict(d) for d in self.defs]
+        if save_templates(self.templates, self.active_name):
+            self.status_hint.config(text=f"模板「{self.active_name}」已保存 ({len(self.defs)} 字段)")
+        else:
+            messagebox.showerror("保存失败", "无法写入模板文件", parent=self)
+
+    def _on_apply(self):
+        """Save template, apply to main app, and close dialog."""
+        if not self._validate_keys():
+            return
+        self.templates[self.active_name] = [dict(d) for d in self.defs]
+        save_templates(self.templates, self.active_name)
+        self.result = (self.templates[self.active_name], dict(self.templates), self.active_name)
         self.destroy()
+
+    def _on_confirm(self):
+        """Same as apply — save, apply, close."""
+        self._on_apply()
+
+    def _on_template_select(self, event=None):
+        """Switch to a different template."""
+        new_name = self.template_var.get()
+        if new_name == self.active_name:
+            return
+        # Confirm discard unsaved changes
+        if new_name in self.templates:
+            if not messagebox.askyesno(
+                "切换模板",
+                f"切换到模板「{new_name}」将丢弃当前未保存的修改，\n是否继续？",
+                parent=self,
+            ):
+                self.template_var.set(self.active_name)
+                return
+            self.active_name = new_name
+            self.defs = [dict(d) for d in self.templates[self.active_name]]
+            self._populate_list()
+
+    def _save_as_template(self):
+        """Save current field definitions as a new template."""
+        if not self._validate_keys():
+            return
+
+        # Prompt for template name
+        dialog = tk.Toplevel(self)
+        dialog.title("另存为模板")
+        dialog.geometry("320x120")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="模板名称:",
+                  font=("Microsoft YaHei", 10)).pack(padx=12, pady=(12, 4), anchor=tk.W)
+        name_var = tk.StringVar()
+        name_entry = ttk.Entry(dialog, textvariable=name_var, width=30,
+                               font=("Microsoft YaHei", 10))
+        name_entry.pack(padx=12, fill=tk.X)
+        name_entry.focus_set()
+
+        result = [None]
+
+        def on_ok():
+            name = name_var.get().strip()
+            if not name:
+                messagebox.showwarning("名称错误", "模板名称不能为空", parent=dialog)
+                return
+            if name in self.templates:
+                if not messagebox.askyesno(
+                    "覆盖确认",
+                    f"模板「{name}」已存在，是否覆盖？",
+                    parent=dialog,
+                ):
+                    return
+            result[0] = name
+            dialog.destroy()
+
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(fill=tk.X, padx=12, pady=12)
+        ttk.Button(btn_frame, text="取消", command=dialog.destroy).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(btn_frame, text="保存", command=on_ok).pack(side=tk.RIGHT, padx=2)
+
+        dialog.bind("<Return>", lambda e: on_ok())
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+
+        # Center
+        dialog.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() - dialog.winfo_width()) // 2
+        y = self.winfo_y() + (self.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{max(0,x)}+{max(0,y)}")
+
+        self.wait_window(dialog)
+
+        if result[0]:
+            self.templates[result[0]] = [dict(d) for d in self.defs]
+            self.active_name = result[0]
+            self.template_combo["values"] = list(self.templates.keys())
+            self.template_var.set(self.active_name)
+            messagebox.showinfo("保存成功", f"模板「{self.active_name}」已保存", parent=self)
+
+    def _delete_template(self):
+        """Delete the current template."""
+        if len(self.templates) <= 1:
+            messagebox.showwarning("无法删除", "至少需要保留一个模板", parent=self)
+            return
+        if not messagebox.askyesno(
+            "删除模板",
+            f"确定要删除模板「{self.active_name}」吗？\n"
+            f"（当前字段配置将丢失，请先另存为其他模板）",
+            parent=self,
+        ):
+            return
+        del self.templates[self.active_name]
+        self.active_name = list(self.templates.keys())[0]
+        self.defs = [dict(d) for d in self.templates[self.active_name]]
+        self.template_combo["values"] = list(self.templates.keys())
+        self.template_var.set(self.active_name)
+        self._populate_list()
 
 
 # ═════════════════════════════════════════════════════
@@ -1370,7 +1841,7 @@ class BatchApplyDialog(tk.Toplevel):
         ttk.Button(sel_frame, text="全选", command=self._select_all).pack(side=tk.LEFT, padx=2)
         ttk.Button(sel_frame, text="全不选", command=self._select_none).pack(side=tk.LEFT, padx=2)
         ttk.Label(sel_frame, text=f"共 {len(self.products)} 个同页产品",
-                  font=("Microsoft YaHei", 8), foreground="gray").pack(side=tk.RIGHT)
+                  font=("Microsoft YaHei", 9), foreground="#86868B").pack(side=tk.RIGHT)
 
         # ── Middle section: scrollable product list (fills remaining space) ──
         list_container = ttk.Frame(self)
@@ -1405,7 +1876,7 @@ class BatchApplyDialog(tk.Toplevel):
 
         ttk.Label(header, text=f"字段: {self.field_label}", font=("Microsoft YaHei", 10, "bold")).pack(anchor=tk.W)
         ttk.Label(header, text=f"OCR结果: \"{self.text[:60]}{'...' if len(self.text)>60 else ''}\"",
-                  font=("Microsoft YaHei", 9), foreground="#2196F3").pack(anchor=tk.W, pady=2)
+                  font=("Microsoft YaHei", 9), foreground="#007AFF").pack(anchor=tk.W, pady=2)
 
         # Keyboard shortcuts: Space / Enter → skip (quick dismiss)
         self.bind("<Return>", lambda e: self._skip())
@@ -1429,14 +1900,14 @@ class BatchApplyDialog(tk.Toplevel):
 
             # Product info
             info = f"#{idx+1}  {oe[:20]}  |  {brand[:12]}  |  {desc1[:25]}  |  第{page}页"
-            ttk.Label(row_frame, text=info, font=("Microsoft YaHei", 8)).pack(side=tk.LEFT, padx=4)
+            ttk.Label(row_frame, text=info, font=("Microsoft YaHei", 9)).pack(side=tk.LEFT, padx=4)
 
             # Highlight current product
             if idx == self.current_idx:
                 row_frame.configure(style="Highlight.TFrame")
                 # Note: we need a style for this, but for simplicity just add a visual marker
-                ttk.Label(row_frame, text="← 当前", font=("Microsoft YaHei", 8, "bold"),
-                          foreground="#2196F3").pack(side=tk.LEFT, padx=2)
+                ttk.Label(row_frame, text="← 当前", font=("Microsoft YaHei", 9, "bold"),
+                          foreground="#007AFF").pack(side=tk.LEFT, padx=2)
 
     def _select_all(self):
         for var in self.check_vars.values():
@@ -1465,7 +1936,7 @@ class MainApplication:
 
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("展会目录PDF自动提取工具 - MVP测试")
+        self.root.title("展会目录PDF自动提取工具")
         self.root.geometry("1400x800")
         self.root.minsize(1024, 600)
 
@@ -1477,12 +1948,16 @@ class MainApplication:
         except Exception:
             pass
 
+        # ── Theme setup (must happen before any widget creation) ──
+        self._setup_theme()
+
         # State
         self.products = []
         self.edit_state = {}  # {product_idx: {field_key: new_value}}
         self.pdf_path = None
         self.output_dir = None
         self.images_dir = None
+        self.all_matches = {}  # {page_num: [match, ...]}
 
         # Pipeline
         self.pipeline = PipelineRunner()
@@ -1498,6 +1973,159 @@ class MainApplication:
         # Start pipeline queue poll
         self._poll_pipeline_queue()
 
+    # ─── Theme ───
+
+    def _setup_theme(self):
+        """Configure Apple macOS-style light theme via ttk.Style (clam engine)."""
+        style = ttk.Style()
+        style.theme_use("clam")
+
+        # ── Apple macOS color palette ──
+        BG        = "#F2F2F7"  # iOS/macOS 系统灰底
+        BG_PANEL  = "#FFFFFF"  # 白色卡片
+        BG_INPUT  = "#FFFFFF"  # 白色输入框
+        BG_HOVER  = "#E8E8ED"  # 悬停时微灰
+        BG_SELECT = "#0060DF"  # 选中: 深蓝底
+        FG        = "#1D1D1F"  # 主文字近黑
+        FG_DIM    = "#86868B"  # 次要文字
+        FG_WHITE  = "#FFFFFF"  # 白色文字(深蓝底用)
+        ACCENT    = "#007AFF"  # Apple系统蓝
+        GREEN     = "#34C759"  # Apple绿
+        AMBER     = "#FF9500"  # Apple橙
+        RED       = "#FF3B30"  # Apple红
+        BORDER    = "#E5E5EA"  # 极细分隔线
+
+        # ── Fonts ──
+        default_font = ("Microsoft YaHei", 10)
+        heading_font = ("Microsoft YaHei", 11, "bold")
+        mono_font    = ("Consolas", 10)
+
+        # ── Root-level defaults ──
+        self.root.configure(bg=BG)
+        style.configure(".", background=BG, foreground=FG, font=default_font,
+                        borderwidth=0, troughcolor="#F9F9FC")
+
+        # ── Frame ──
+        style.configure("TFrame", background=BG)
+        style.configure("Panel.TFrame", background=BG_PANEL)
+        style.configure("Toolbar.TFrame", background=BG)
+
+        # ── Label ──
+        style.configure("TLabel", background=BG, foreground=FG)
+        style.configure("Panel.TLabel", background=BG_PANEL, foreground=FG)
+        style.configure("Dim.TLabel", foreground=FG_DIM)
+        style.configure("Heading.TLabel", font=heading_font)
+        style.configure("Panel.Heading.TLabel", background=BG_PANEL, font=heading_font)
+
+        # ── Button: 白底 + 细灰边框，悬停变蓝 ──
+        style.configure("TButton",
+            background=BG_PANEL, foreground=FG,
+            borderwidth=1, bordercolor=BORDER,
+            relief="flat", padding=(12, 5),
+            font=default_font,
+        )
+        style.map("TButton",
+            background=[("active", ACCENT), ("pressed", "#0060DF")],
+            foreground=[("active", FG_WHITE), ("pressed", FG_WHITE)],
+            bordercolor=[("active", ACCENT)],
+        )
+        style.configure("Accent.TButton",
+            background=ACCENT, foreground=FG_WHITE,
+            borderwidth=0, padding=(14, 6),
+        )
+        style.map("Accent.TButton",
+            background=[("active", "#0060DF"), ("pressed", "#0047B3")],
+        )
+
+        # ── Entry: 白底 + 浅灰边框，聚焦变蓝 ──
+        style.configure("TEntry",
+            fieldbackground=BG_INPUT, foreground=FG,
+            borderwidth=1, bordercolor=BORDER,
+            relief="solid", padding=(6, 4),
+            insertcolor=FG,
+        )
+        style.map("TEntry",
+            bordercolor=[("focus", ACCENT), ("hover", "#C7C7CC")],
+        )
+
+        # ── Combobox: 同Entry风格 ──
+        style.configure("TCombobox",
+            fieldbackground=BG_INPUT, foreground=FG,
+            borderwidth=1, bordercolor=BORDER,
+            arrowcolor=FG_DIM, relief="solid",
+            padding=(4, 3),
+        )
+        style.map("TCombobox",
+            bordercolor=[("focus", ACCENT), ("hover", "#C7C7CC")],
+        )
+        self.root.option_add("*TCombobox*Listbox.background", BG_PANEL)
+        self.root.option_add("*TCombobox*Listbox.foreground", FG)
+        self.root.option_add("*TCombobox*Listbox.selectBackground", BG_SELECT)
+        self.root.option_add("*TCombobox*Listbox.selectForeground", FG_WHITE)
+
+        # ── Treeview: 白底卡片式列表 ──
+        style.configure("Treeview",
+            background=BG_PANEL, foreground=FG,
+            fieldbackground=BG_PANEL,
+            borderwidth=1, bordercolor=BORDER,
+            rowheight=28,
+        )
+        style.configure("Treeview.Heading",
+            background="#FAFAFA", foreground=FG_DIM,
+            borderwidth=0, bordercolor=BORDER,
+            relief="flat", font=("Microsoft YaHei", 9, "bold"),
+            padding=(6, 4),
+        )
+        style.map("Treeview.Heading",
+            background=[("active", "#F0F0F5")],
+        )
+        style.map("Treeview",
+            background=[("selected", BG_SELECT)],
+            foreground=[("selected", FG_WHITE)],
+        )
+
+        # ── Scrollbar: 半透明浅灰 ──
+        style.configure("TScrollbar",
+            background="#E5E5EA", troughcolor=BG,
+            borderwidth=0, arrowsize=14,
+        )
+        style.map("TScrollbar",
+            background=[("active", "#C7C7CC")],
+        )
+
+        # ── Progressbar: 蓝色进度条 ──
+        style.configure("TProgressbar",
+            troughcolor="#E5E5EA", background=ACCENT,
+            bordercolor=BORDER, borderwidth=1,
+            thickness=8,
+        )
+
+        # ── Separator: 极细浅灰线 ──
+        style.configure("TSeparator", background=BORDER)
+
+        # ── Checkbutton ──
+        style.configure("TCheckbutton",
+            background=BG_PANEL, foreground=FG,
+        )
+        style.map("TCheckbutton",
+            background=[("active", BG_PANEL)],
+        )
+
+        # ── PanedWindow sash ──
+        style.configure("TPanedwindow", background=BG)
+        style.configure("Sash", background=BORDER)
+        style.map("Sash", background=[("active", ACCENT)])
+
+        # ── Store palette for use in canvas widgets ──
+        self._theme = {
+            "bg": BG, "bg_panel": BG_PANEL, "bg_input": BG_INPUT,
+            "bg_hover": BG_HOVER, "bg_select": BG_SELECT,
+            "fg": FG, "fg_dim": FG_DIM, "fg_white": FG_WHITE,
+            "accent": ACCENT, "green": GREEN, "amber": AMBER,
+            "red": RED, "border": BORDER,
+            "font": default_font, "font_heading": heading_font, "font_mono": mono_font,
+        }
+
     # ─── Menu ───
 
     def _build_menu(self):
@@ -1507,11 +2135,14 @@ class MainApplication:
         file_menu.add_command(label="打开PDF...", command=self._on_open_pdf, accelerator="Ctrl+O")
         file_menu.add_command(label="打开JSON...", command=self._on_open_json)
         file_menu.add_separator()
+        file_menu.add_command(label="保存项目...", command=self._save_session, accelerator="Ctrl+Shift+S")
+        file_menu.add_command(label="加载项目...", command=self._load_session, accelerator="Ctrl+Shift+O")
+        file_menu.add_separator()
         file_menu.add_command(label="退出", command=self.root.quit, accelerator="Ctrl+Q")
         menubar.add_cascade(label="文件", menu=file_menu)
 
         pipeline_menu = tk.Menu(menubar, tearoff=0)
-        pipeline_menu.add_command(label="运行完整管线", command=self._on_run_pipeline, accelerator="Ctrl+R")
+        pipeline_menu.add_command(label="重新识别", command=self._on_run_pipeline, accelerator="Ctrl+R")
         menubar.add_cascade(label="管线", menu=pipeline_menu)
 
         export_menu = tk.Menu(menubar, tearoff=0)
@@ -1538,13 +2169,16 @@ class MainApplication:
 
         ttk.Button(toolbar, text="📂 打开PDF", command=self._on_open_pdf).pack(side=tk.LEFT, padx=2)
         ttk.Button(toolbar, text="📂 打开JSON", command=self._on_open_json).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, text="💾 保存项目", command=self._save_session).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, text="📂 加载项目", command=self._load_session).pack(side=tk.LEFT, padx=2)
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=2)
-        ttk.Button(toolbar, text="▶ 运行管线", command=self._on_run_pipeline).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, text="▶ 重新识别", command=self._on_run_pipeline).pack(side=tk.LEFT, padx=2)
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=2)
         ttk.Button(toolbar, text="📊 导出Excel", command=self._on_export_excel).pack(side=tk.LEFT, padx=2)
         ttk.Button(toolbar, text="📋 导出JSON", command=self._on_export_json).pack(side=tk.LEFT, padx=2)
 
-        self.file_label = ttk.Label(toolbar, text="未打开文件", foreground="gray")
+        self.file_label = ttk.Label(toolbar, text="未打开文件", foreground="#86868B",
+                                     font=("Microsoft YaHei", 9))
         self.file_label.pack(side=tk.LEFT, padx=12)
 
         self.progress = ttk.Progressbar(toolbar, mode="indeterminate", length=100)
@@ -1568,7 +2202,7 @@ class MainApplication:
         self.pdf_v_scroll = ttk.Scrollbar(canvas_container, orient=tk.VERTICAL)
         self.pdf_canvas = tk.Canvas(
             canvas_container,
-            bg="#F5F5F5",
+            bg="#E8E8ED",
             xscrollcommand=self.pdf_h_scroll.set,
             yscrollcommand=self.pdf_v_scroll.set,
         )
@@ -1612,6 +2246,7 @@ class MainApplication:
             on_save=self._on_field_save,
             on_navigate=self._on_field_navigate,
             on_re_extract=self._on_field_re_extract,
+            on_re_select_image=self._on_re_select_image,
         )
         self.field_editor.clear()
 
@@ -1623,26 +2258,37 @@ class MainApplication:
         self._sel_rect_id = None
         self._selection_hint_id = None
         self._ocr_sel_bbox = None  # Persistent OCR region indicator
+        self._image_selection_mode = False
+        self._image_selection_product_idx = None
 
     # ─── Status Bar ───
 
     def _build_status_bar(self):
         self.status_var = tk.StringVar(value="就绪 — 点击 打开PDF 或 打开JSON 开始")
-        status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN,
-                               anchor=tk.W, font=("Microsoft YaHei", 9))
+        status_bar = ttk.Frame(self.root, style="Panel.TFrame")
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Separator(self.root, orient=tk.HORIZONTAL).pack(side=tk.BOTTOM, fill=tk.X)
+        status_label = ttk.Label(status_bar, textvariable=self.status_var,
+                                 anchor=tk.W, font=("Microsoft YaHei", 9), foreground="#86868B",
+                                 padding=(10, 3))
+        status_label.pack(fill=tk.X)
 
     # ─── Keyboard Shortcuts ───
 
     def _bind_shortcuts(self):
         self.root.bind("<Control-o>", lambda e: self._on_open_pdf())
         self.root.bind("<Control-s>", lambda e: self._on_export_json())
+        self.root.bind("<Control-S>", lambda e: self._save_session())  # Ctrl+Shift+S
+        self.root.bind("<Control-O>", lambda e: self._load_session())  # Ctrl+Shift+O
         self.root.bind("<Control-e>", lambda e: self._on_export_excel())
         self.root.bind("<Control-r>", lambda e: self._on_run_pipeline())
         self.root.bind("<Control-n>", lambda e: self.product_list.select_next())
         self.root.bind("<Control-p>", lambda e: self.product_list.select_prev())
         self.root.bind("<Control-q>", lambda e: self.root.quit())
-        self.root.bind("<Escape>", lambda e: self._exit_selection_mode() if self._selection_mode else None)
+        self.root.bind("<Escape>", lambda e: (
+            self._exit_selection_mode() if self._selection_mode else
+            self._exit_image_selection_mode() if getattr(self, '_image_selection_mode', False) else None
+        ))
 
     # ─── File Operations ───
 
@@ -1679,8 +2325,8 @@ class MainApplication:
             return
 
         try:
-            products, report, json_path, images_dir = self.pipeline.load_from_json(filepath)
-            self._on_pipeline_complete(products, report, json_path, None, images_dir)
+            products, report, json_path, images_dir, all_matches = self.pipeline.load_from_json(filepath)
+            self._on_pipeline_complete(products, report, json_path, None, images_dir, all_matches)
             self.file_label.config(text=f"{os.path.basename(filepath)}")
             self.status_var.set(f"已加载: {os.path.basename(filepath)}")
         except Exception as e:
@@ -1709,15 +2355,25 @@ class MainApplication:
                     self.status_var.set(msg[1])
                 elif msg_type == "warning":
                     self.status_var.set(f"⚠ {msg[1]}")
+                elif msg_type == "status_update":
+                    _, status_text = msg
+                    self.status_var.set(status_text)
                 elif msg_type == "ocr_done":
                     _, field_key, text, product_idx, pdf_bbox = msg
                     self._on_ocr_done(field_key, text, product_idx, pdf_bbox)
                 elif msg_type == "ocr_error":
                     _, field_key, error = msg
                     self._on_ocr_error(field_key, error)
+                elif msg_type == "image_extracted":
+                    _, product_idx, image_path = msg
+                    self._on_image_extracted(product_idx, image_path)
+                elif msg_type == "image_error":
+                    _, product_idx, error = msg
+                    self._on_image_error(product_idx, error)
                 elif msg_type == "done":
-                    _, products, report, fields_path, excel_path, images_dir = msg
-                    self._on_pipeline_complete(products, report, fields_path, excel_path, images_dir)
+                    _, products, report, fields_path, excel_path, images_dir, *rest = msg
+                    all_matches = rest[0] if rest else {}
+                    self._on_pipeline_complete(products, report, fields_path, excel_path, images_dir, all_matches)
                 elif msg_type == "error":
                     self.progress.stop()
                     self.progress.pack_forget()
@@ -1730,7 +2386,8 @@ class MainApplication:
         self._pipeline_after_id = self.root.after(200, self._poll_pipeline_queue)
 
     def _on_pipeline_complete(self, products: list, report: dict,
-                               fields_path: str, excel_path: str | None, images_dir: str):
+                               fields_path: str, excel_path: str | None,
+                               images_dir: str, all_matches: dict = None):
         """Handle pipeline completion."""
         self.progress.stop()
         self.progress.pack_forget()
@@ -1738,6 +2395,8 @@ class MainApplication:
         self.products = products
         self.edit_state = {}
         self.images_dir = images_dir
+        self.all_matches = all_matches or {}
+        self.field_editor.set_images_dir(images_dir or "")
 
         # Load PDF for rendering
         if self.pdf_path and fitz:
@@ -1768,6 +2427,8 @@ class MainApplication:
         # Exit selection mode if active
         if self._selection_mode:
             self._exit_selection_mode()
+        if getattr(self, '_image_selection_mode', False):
+            self._exit_image_selection_mode()
 
         # Clear any OCR region indicators from previous selection
         self.pdf_canvas.delete("ocr_region")
@@ -1829,6 +2490,321 @@ class MainApplication:
 
     # ─── Interactive Re-Extraction (Selection Mode) ───
 
+    # ─── Image Re-Selection Mode ───
+
+    def _on_re_select_image(self, product_idx: int):
+        """Enter PDF selection mode for re-selecting a product image."""
+        if not self.pdf_renderer.doc:
+            messagebox.showinfo("提示", "请先打开PDF文件")
+            return
+
+        # Navigate to the product's page
+        product = self.products[product_idx]
+        product_page = product.get("page", 1) - 1
+        if self.pdf_renderer.current_page != product_page:
+            self.pdf_renderer.go_to_page(product_page)
+            self._update_page_label()
+        # Redraw bboxes for this page so the user sees product positions
+        self._redraw_bboxes()
+
+        # Clear any previous OCR region indicators
+        self.pdf_canvas.delete("ocr_region")
+        self._ocr_sel_bbox = None
+
+        # Exit any existing OCR selection mode
+        if self._selection_mode:
+            self._exit_selection_mode()
+
+        # Enter image selection mode
+        self._image_selection_mode = True
+        self._image_selection_product_idx = product_idx
+
+        # Change cursor
+        self.pdf_canvas.config(cursor="crosshair")
+
+        # Show hint
+        hint_text = "请在左侧PDF页面框选该产品对应的图片区域"
+        self._selection_hint_id = self.pdf_canvas.create_text(
+            10, 10, text=hint_text, anchor=tk.NW,
+            fill="#34C759", font=("Microsoft YaHei", 10, "bold"),
+            tags=("selection_hint",),
+        )
+        bbox = self.pdf_canvas.bbox(self._selection_hint_id)
+        if bbox:
+            self.pdf_canvas.create_rectangle(
+                bbox[0]-4, bbox[1]-2, bbox[2]+4, bbox[3]+2,
+                fill="#E8F5E9", outline="", tags=("selection_hint",),
+            )
+            self.pdf_canvas.tag_raise(self._selection_hint_id)
+
+        # Bind mouse events
+        self.pdf_canvas.bind("<Button-1>", self._on_img_sel_start)
+        self.pdf_canvas.bind("<B1-Motion>", self._on_img_sel_drag)
+        self.pdf_canvas.bind("<ButtonRelease-1>", self._on_img_sel_end)
+
+        # Unbind normal bbox click during selection
+        self.pdf_canvas.tag_unbind("bbox_rect", "<Button-1>")
+
+        self.status_var.set("图片选区模式: 框选产品图片区域 (按 Esc 取消)")
+
+    def _exit_image_selection_mode(self):
+        """Exit image selection mode."""
+        self._image_selection_mode = getattr(self, '_image_selection_mode', False)
+        self._image_selection_product_idx = getattr(self, '_image_selection_product_idx', None)
+
+        self.pdf_canvas.config(cursor="")
+        self.pdf_canvas.delete("selection_hint")
+        self.pdf_canvas.delete("sel_rect")
+
+        self.pdf_canvas.unbind("<Button-1>")
+        self.pdf_canvas.unbind("<B1-Motion>")
+        self.pdf_canvas.unbind("<ButtonRelease-1>")
+
+        # Re-bind bbox click
+        self.pdf_canvas.tag_bind("bbox_rect", "<Button-1>", self.bbox_overlay._on_bbox_click)
+
+        self._image_selection_mode = False
+        self.status_var.set("已取消图片选区模式")
+
+    def _on_img_sel_start(self, event):
+        """Mouse down in image selection mode."""
+        if not getattr(self, '_image_selection_mode', False):
+            return
+        x = self.pdf_canvas.canvasx(event.x)
+        y = self.pdf_canvas.canvasy(event.y)
+        self._sel_start_x = x
+        self._sel_start_y = y
+        self.pdf_canvas.delete("sel_rect")
+        self._sel_rect_id = self.pdf_canvas.create_rectangle(
+            x, y, x, y,
+            outline="#34C759", width=2, dash=(4, 2),
+            tags=("sel_rect",),
+        )
+
+    def _on_img_sel_drag(self, event):
+        """Mouse drag in image selection mode."""
+        if not getattr(self, '_image_selection_mode', False) or self._sel_rect_id is None:
+            return
+        x = self.pdf_canvas.canvasx(event.x)
+        y = self.pdf_canvas.canvasy(event.y)
+        self.pdf_canvas.coords(
+            self._sel_rect_id,
+            self._sel_start_x, self._sel_start_y, x, y,
+        )
+
+    def _on_img_sel_end(self, event):
+        """Mouse release in image selection mode - extract image region."""
+        if not getattr(self, '_image_selection_mode', False):
+            return
+        x = self.pdf_canvas.canvasx(event.x)
+        y = self.pdf_canvas.canvasy(event.y)
+
+        x0 = min(self._sel_start_x, x)
+        y0 = min(self._sel_start_y, y)
+        x1 = max(self._sel_start_x, x)
+        y1 = max(self._sel_start_y, y)
+
+        if (x1 - x0) < 15 or (y1 - y0) < 15:
+            self.status_var.set("选区太小，请重新框选 (按 Esc 取消)")
+            return
+
+        # Convert to PDF coords
+        zoom = self.pdf_renderer.zoom
+        pdf_bbox = [v / zoom for v in [x0, y0, x1, y1]]
+
+        product_idx = self._image_selection_product_idx
+
+        # Save for visual indicator
+        self._ocr_sel_bbox = pdf_bbox[:]
+
+        # Exit image selection mode
+        self._exit_image_selection_mode()
+
+        # Extract image from PDF region
+        self._extract_image_region(pdf_bbox, product_idx)
+
+    def _extract_image_region(self, pdf_bbox: list, product_idx: int):
+        """Extract image from PDF region, remove overlay text, and associate with product."""
+        if not self.pdf_renderer.doc:
+            return
+
+        self.status_var.set("正在提取图片并消除文字...")
+        self.progress.pack(side=tk.LEFT, padx=6)
+        self.progress.start()
+
+        # Lazy singleton OCR for text removal (avoid re-init each call)
+        if not hasattr(self, '_text_removal_ocr'):
+            self._text_removal_ocr = None
+
+        def _remove_text_from_image(pil_image):
+            """Detect and remove OCR text from product image using inpainting."""
+            import numpy as np
+            try:
+                import cv2
+            except ImportError:
+                cv2 = None
+
+            try:
+                # Lazy init PaddleOCR once (takes ~3s first time)
+                if self._text_removal_ocr is None:
+                    try:
+                        from paddleocr import PaddleOCR
+                        self._text_removal_ocr = PaddleOCR(
+                            lang='ch', show_log=False,
+                            det_db_thresh=0.2,           # 更低阈值，检测不完整文字
+                            det_db_box_thresh=0.15,       # 更低box阈值
+                            det_db_unclip_ratio=1.8,      # 扩展检测框以覆盖断裂笔画
+                            drop_score=0.2,               # 接受低置信度识别（部分可见的文字）
+                        )
+                    except Exception:
+                        return pil_image  # OCR not available
+
+                img_array = np.array(pil_image)
+                h, w = img_array.shape[:2]
+
+                # Downsample if image is very large for faster OCR
+                ocr_scale = 1.0
+                if max(w, h) > 1200:
+                    ocr_scale = 1200.0 / max(w, h)
+                    ocr_w, ocr_h = int(w * ocr_scale), int(h * ocr_scale)
+                    ocr_img = np.array(pil_image.resize((ocr_w, ocr_h), Image.LANCZOS))
+                else:
+                    ocr_img = img_array
+
+                results = self._text_removal_ocr.ocr(ocr_img, cls=False)
+                if not results or not results[0]:
+                    return pil_image  # No text detected
+
+                # Build mask at original resolution
+                mask = np.zeros((h, w), dtype=np.uint8)
+
+                for line in results[0]:
+                    bbox = line[0]  # [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+                    # Scale bbox back to original resolution
+                    if ocr_scale != 1.0:
+                        bbox = [[p[0] / ocr_scale, p[1] / ocr_scale] for p in bbox]
+
+                    # Expand bbox outward to catch partial chars at selection edges
+                    margin = 8  # pixels
+                    x_vals = [p[0] for p in bbox]
+                    y_vals = [p[1] for p in bbox]
+                    cx, cy = sum(x_vals) / 4, sum(y_vals) / 4
+                    expanded = []
+                    for p in bbox:
+                        dx = p[0] - cx
+                        dy = p[1] - cy
+                        expanded.append([
+                            max(0, min(w, p[0] + margin * (1 if dx >= 0 else -1))),
+                            max(0, min(h, p[1] + margin * (1 if dy >= 0 else -1))),
+                        ])
+                    bbox = expanded
+
+                    pts = np.array(bbox, dtype=np.int32)
+                    if cv2 is not None:
+                        cv2.fillPoly(mask, [pts], 255)
+                    else:
+                        x_vals = [int(p[0]) for p in bbox]
+                        y_vals = [int(p[1]) for p in bbox]
+                        x0, x1 = max(0, min(x_vals)-2), min(w, max(x_vals)+2)
+                        y0, y1 = max(0, min(y_vals)-2), min(h, max(y_vals)+2)
+                        mask[y0:y1, x0:x1] = 255
+
+                if mask.sum() == 0:
+                    return pil_image
+
+                # Inpaint text regions (more aggressive dilation for partial chars)
+                if cv2 is not None:
+                    kernel = np.ones((5, 5), np.uint8)
+                    mask = cv2.dilate(mask, kernel, iterations=4)
+                    result = cv2.inpaint(img_array, mask, inpaintRadius=7,
+                                         flags=cv2.INPAINT_TELEA)
+                    return Image.fromarray(result)
+                else:
+                    # Pure numpy fallback: fill with background color
+                    bg_mask = (mask == 0)
+                    bg_color = np.median(img_array[bg_mask], axis=0).astype(np.uint8) if bg_mask.sum() > 100 else np.array([255, 255, 255], dtype=np.uint8)
+                    result = img_array.copy()
+                    result[mask > 0] = bg_color
+                    return Image.fromarray(result)
+
+            except Exception:
+                return pil_image  # On any error, return original
+
+        def _do_extract():
+            try:
+                page = self.pdf_renderer.doc[self.pdf_renderer.current_page]
+                # Render at PDF-native resolution (~432 DPI = 6x PDF base 72 DPI)
+                extract_zoom = 6.0
+                mat = fitz.Matrix(extract_zoom, extract_zoom)
+                clip = fitz.Rect(pdf_bbox)
+                pix = page.get_pixmap(matrix=mat, clip=clip)
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+                # Remove overlay text from product image
+                self.pipeline.queue.put(("status_update", "正在消除文字..."))
+                img = _remove_text_from_image(img)
+
+                # Save image
+                pdf_name = Path(self.pdf_path).stem if self.pdf_path else "unknown"
+                save_dir = os.path.join(
+                    os.path.dirname(self.pdf_path) if self.pdf_path else ".",
+                    "..", "step5_output", pdf_name, f"{pdf_name}_images",
+                )
+                os.makedirs(save_dir, exist_ok=True)
+                img_filename = f"{pdf_name}_product_{product_idx+1}_manual.png"
+                img_path = os.path.join(save_dir, img_filename)
+                img.save(img_path, format="PNG")
+
+                self.pipeline.queue.put(("image_extracted", product_idx, img_path))
+            except Exception as e:
+                self.pipeline.queue.put(("image_error", product_idx, str(e)))
+
+        threading.Thread(target=_do_extract, daemon=True).start()
+
+    def _on_image_extracted(self, product_idx: int, image_path: str):
+        """Handle successful image extraction."""
+        self.progress.stop()
+        self.progress.pack_forget()
+
+        # Store in edit_state
+        if product_idx not in self.edit_state:
+            self.edit_state[product_idx] = {}
+        self.edit_state[product_idx]["_product_image"] = image_path
+
+        # Update product's matched images
+        product = self.products[product_idx]
+        if "_matched_images" not in product:
+            product["_matched_images"] = []
+        # Insert manual image at front
+        product["_matched_images"].insert(0, {
+            "xref": -1,
+            "filename": os.path.basename(image_path),
+            "bbox": [0, 0, 0, 0],
+            "confidence": 1.0,
+            "method": "manual_selection",
+        })
+
+        # Refresh field editor to show new image
+        self.field_editor.set_images_dir(os.path.dirname(image_path))
+        self.field_editor.populate(product, product_idx, self.edit_state)
+
+        # Update product list
+        self.product_list.update_row(product_idx)
+
+        # Draw visual indicator on PDF
+        if self._ocr_sel_bbox:
+            self._draw_ocr_region(self._ocr_sel_bbox, "产品图片")
+        self.status_var.set(f"图片已提取: {os.path.basename(image_path)} → 产品 #{product_idx+1}")
+
+    def _on_image_error(self, product_idx: int, error: str):
+        """Handle image extraction error."""
+        self.progress.stop()
+        self.progress.pack_forget()
+        self.status_var.set(f"图片提取失败: {error}")
+        messagebox.showerror("图片提取错误", f"无法提取图片:\n{error}")
+
+    # ─── OCR Text Re-Extraction ───
+
     def _on_field_re_extract(self, field_key: str):
         """Enter PDF selection mode for re-extracting a specific field."""
         if not self.pdf_renderer.doc:
@@ -1852,7 +2828,7 @@ class MainApplication:
         hint_text = f"请在左侧PDF页面框选 '{field_key}' 字段对应的文本区域"
         self._selection_hint_id = self.pdf_canvas.create_text(
             10, 10, text=hint_text, anchor=tk.NW,
-            fill="#2196F3", font=("Microsoft YaHei", 10, "bold"),
+            fill="#007AFF", font=("Microsoft YaHei", 10, "bold"),
             tags=("selection_hint",),
         )
         # Draw a background for the hint
@@ -1913,7 +2889,7 @@ class MainApplication:
         # Create new rectangle
         self._sel_rect_id = self.pdf_canvas.create_rectangle(
             x, y, x, y,
-            outline="#2196F3", width=2, dash=(4, 2),
+            outline="#007AFF", width=2, dash=(4, 2),
             tags=("sel_rect",),
         )
 
@@ -2226,12 +3202,12 @@ class MainApplication:
         self.pdf_canvas.delete("ocr_region")
         self.pdf_canvas.create_rectangle(
             x0, y0, x1, y1,
-            outline="#2196F3", width=2, dash=(3, 3),
+            outline="#007AFF", width=2, dash=(3, 3),
             tags=("ocr_region",),
         )
         self.pdf_canvas.create_text(
             x0 + 4, y0 - 2, text=f"OCR: {label}", anchor=tk.SW,
-            fill="#2196F3", font=("Microsoft YaHei", 8, "bold"),
+            fill="#007AFF", font=("Microsoft YaHei", 9, "bold"),
             tags=("ocr_region",),
         )
 
@@ -2423,6 +3399,17 @@ class MainApplication:
                             "confidence": 1.0,
                             "method": "manual",
                         }
+                    elif key == "_product_image":
+                        # Store manual image path
+                        if "_matched_images" not in product_copy:
+                            product_copy["_matched_images"] = []
+                        product_copy["_matched_images"].insert(0, {
+                            "xref": -1,
+                            "filename": os.path.basename(new_value),
+                            "bbox": [0, 0, 0, 0],
+                            "confidence": 1.0,
+                            "method": "manual_selection",
+                        })
                 product_copy["_edited"] = True
                 # Recalculate confidence
                 total_conf = 0.0
@@ -2436,6 +3423,140 @@ class MainApplication:
                 product_copy["confidence_avg"] = round(total_conf / max(field_count, 1), 2)
             merged.append(product_copy)
         return merged
+
+    # ─── Session Save/Load ───
+
+    SESSION_VERSION = "1.0"
+
+    def _save_session(self):
+        """Save current editing session to a file for later resume."""
+        if not self.products:
+            messagebox.showwarning("无数据", "没有可保存的项目数据")
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            title="保存项目",
+            defaultextension=".json",
+            filetypes=[("项目文件 (*.json)", "*.json"), ("All Files", "*.*")],
+            initialfile=f"{Path(self.pdf_path).stem}_project.json" if self.pdf_path else "project.json",
+        )
+        if not filepath:
+            return
+
+        try:
+            # Convert edit_state keys from int to str for JSON
+            edit_state_str = {str(k): v for k, v in self.edit_state.items()}
+
+            # Serialize all_matches (keys are page numbers as strings)
+            all_matches_serializable = {}
+            for page_key, matches in (self.all_matches or {}).items():
+                all_matches_serializable[str(page_key)] = matches
+
+            session = {
+                "session_version": self.SESSION_VERSION,
+                "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "source_pdf": self.pdf_path,
+                "products": self.products,
+                "edit_state": edit_state_str,
+                "all_matches": all_matches_serializable,
+                "images_dir": self.images_dir,
+                "output_dir": self.output_dir,
+                "current_page": self.pdf_renderer.current_page if self.pdf_renderer else 0,
+                "selected_product_idx": self.product_list.get_selected_index(),
+                "current_zoom": self.pdf_renderer.zoom if self.pdf_renderer else 1.0,
+            }
+
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(session, f, ensure_ascii=False, indent=2)
+
+            edited = len(self.edit_state)
+            self.status_var.set(f"项目已保存: {filepath} | {len(self.products)}产品, {edited}已修改")
+            messagebox.showinfo(
+                "保存成功",
+                f"项目已保存到:\n{filepath}\n\n"
+                f"产品数: {len(self.products)}\n"
+                f"已编辑: {edited}\n"
+                f"当前页码: {session['current_page'] + 1}",
+            )
+        except Exception as e:
+            messagebox.showerror("保存失败", f"无法保存项目:\n{e}")
+
+    def _load_session(self):
+        """Load a previously saved editing session."""
+        filepath = filedialog.askopenfilename(
+            title="加载项目",
+            filetypes=[("项目文件 (*.json)", "*.json"), ("All Files", "*.*")],
+        )
+        if not filepath:
+            return
+
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                session = json.load(f)
+
+            # Validate
+            version = session.get("session_version", "unknown")
+            if version != self.SESSION_VERSION:
+                if not messagebox.askyesno(
+                    "版本不匹配",
+                    f"项目文件版本为 {version}，当前版本为 {self.SESSION_VERSION}。\n"
+                    f"尝试加载可能存在兼容性问题，是否继续？",
+                ):
+                    return
+
+            # Restore state
+            self.pdf_path = session.get("source_pdf")
+            self.products = session.get("products", [])
+            # Convert edit_state keys back from str to int
+            self.edit_state = {
+                int(k): v for k, v in session.get("edit_state", {}).items()
+            }
+            self.all_matches = session.get("all_matches", {})
+            self.images_dir = session.get("images_dir", "")
+            self.output_dir = session.get("output_dir", "")
+            saved_page = session.get("current_page", 0)
+            saved_product_idx = session.get("selected_product_idx")
+            saved_zoom = session.get("current_zoom", 1.0)
+
+            # Open PDF for rendering
+            pdf_loaded = False
+            if self.pdf_path and os.path.isfile(self.pdf_path) and fitz:
+                self.pdf_renderer.open_pdf(self.pdf_path)
+                self.pdf_renderer.set_zoom(saved_zoom)
+                self.pdf_renderer.go_to_page(saved_page)
+                self._update_page_label()
+                pdf_loaded = True
+                self.file_label.config(text=f"{os.path.basename(self.pdf_path)}")
+            elif self.pdf_path and not os.path.isfile(self.pdf_path):
+                self.file_label.config(
+                    text=f"⚠ PDF未找到: {os.path.basename(self.pdf_path)}"
+                )
+            else:
+                self.file_label.config(text="⚠ 未加载PDF")
+
+            # Update UI
+            self.field_editor.set_images_dir(self.images_dir or "")
+            self.product_list.load_products(self.products, self.edit_state)
+
+            # Select saved product (or first)
+            if saved_product_idx is not None and saved_product_idx < len(self.products):
+                self.product_list.select_product(saved_product_idx)
+            elif self.products:
+                self.product_list.select_product(0)
+
+            edited = len(self.edit_state)
+            status_parts = [f"项目已加载: {os.path.basename(filepath)}"]
+            status_parts.append(f"{len(self.products)}产品")
+            if edited:
+                status_parts.append(f"{edited}已修改")
+            if not pdf_loaded:
+                status_parts.append("(PDF未加载)")
+            self.status_var.set(" | ".join(status_parts))
+
+        except json.JSONDecodeError as e:
+            messagebox.showerror("加载失败", f"项目文件格式错误:\n{e}")
+        except Exception as e:
+            messagebox.showerror("加载失败", f"无法加载项目:\n{e}")
 
     def _on_export_json(self):
         """Export merged products to JSON."""
@@ -2487,7 +3608,7 @@ class MainApplication:
 
         try:
             merged = self._merge_products_with_edits()
-            step5_export_to_excel(merged, {}, self.images_dir or "", filepath, image_mode="path")
+            step5_export_to_excel(merged, self.all_matches, self.images_dir or "", filepath, image_mode="embed")
             edited = len(self.edit_state)
             self.status_var.set(f"已导出Excel: {filepath} | {len(merged)}产品, {edited}已修改")
             messagebox.showinfo("导出成功", f"已导出 {len(merged)} 个产品\n已修改: {edited} 个\n\n{filepath}")
@@ -2502,17 +3623,20 @@ class MainApplication:
     # ─── Help ───
 
     def _on_field_config(self):
-        """Open the global field configuration dialog."""
-        dialog = FieldConfigDialog(self.root, FIELD_DEFINITIONS)
+        """Open the global field configuration dialog (with template support)."""
+        templates, active = load_templates()
+        dialog = FieldConfigDialog(self.root, FIELD_DEFINITIONS, templates, active)
         if dialog.result is None:
             return  # Cancelled
 
-        # Update global FIELD_DEFINITIONS in-place
-        FIELD_DEFINITIONS[:] = dialog.result
+        new_definitions, templates_to_save, active_name = dialog.result
 
-        # Save to config file
-        if save_field_config(dialog.result):
-            self.status_var.set("字段配置已保存")
+        # Update global FIELD_DEFINITIONS in-place
+        FIELD_DEFINITIONS[:] = new_definitions
+
+        # Save templates
+        if save_templates(templates_to_save, active_name):
+            self.status_var.set(f"字段配置已保存 (模板: {active_name})")
         else:
             self.status_var.set("字段配置已更新 (未持久化)")
 
@@ -2522,17 +3646,23 @@ class MainApplication:
             on_save=self._on_field_save,
             on_navigate=self._on_field_navigate,
             on_re_extract=self._on_field_re_extract,
+            on_re_select_image=self._on_re_select_image,
         )
 
         # Re-populate current product if any
         sel_idx = self.product_list.get_selected_index()
         if sel_idx is not None and sel_idx < len(self.products):
             self.field_editor.populate(self.products[sel_idx], sel_idx, self.edit_state)
+        else:
+            self.field_editor.clear()
 
         # Refresh product list (confidence recalc uses new field defs)
         self.product_list.load_products(self.products, self.edit_state)
         if sel_idx is not None:
             self.product_list.select_product(sel_idx)
+
+        # Force UI update
+        self.field_editor.update_idletasks()
 
     def _on_about(self):
         messagebox.showinfo(
@@ -2545,7 +3675,8 @@ class MainApplication:
             "快捷键:\n"
             "  Ctrl+O: 打开PDF  |  Ctrl+S: 导出JSON\n"
             "  Ctrl+E: 导出Excel |  Ctrl+N/P: 上/下条产品\n"
-            "  Ctrl+R: 重新运行管线\n\n"
+            "  Ctrl+R: 重新识别 |  Ctrl+Shift+S: 保存项目\n"
+            "  Ctrl+Shift+O: 加载项目 |  Esc: 取消框选\n\n"
             "© 2026 MVP Technical Validation"
         )
 

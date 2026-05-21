@@ -73,6 +73,7 @@ def parse_pdf(pdf_path: str, ocr_engine=None) -> dict:
 
     result["parse_time_seconds"] = round(time.time() - t0, 3)
     result["avg_parse_time_per_page"] = round(result["parse_time_seconds"] / max(len(doc), 1), 3)
+    result["doc"] = doc  # 保留doc引用供管线内图片导出使用
     return result
 
 

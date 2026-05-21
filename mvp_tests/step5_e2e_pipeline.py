@@ -47,7 +47,7 @@ def export_to_excel(
     images_dir: str,
     output_path: str,
     image_mode: str = "embed",
-    thumbnail_size: tuple = (120, 120),
+    thumbnail_size: tuple = (320, 250),
 ):
     """
     生成最终 Excel 文件
@@ -63,7 +63,9 @@ def export_to_excel(
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
+    from openpyxl.utils.units import pixels_to_EMU
     from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
 
     try:
         from PIL import Image as PILImage
@@ -88,7 +90,7 @@ def export_to_excel(
         ("价格", 12),
         ("原厂参考号", 16),
         ("每包数量", 10),
-        ("产品图片", 15 if image_mode == "path" else 18),
+        ("产品图片", 15 if image_mode == "path" else 28),
         ("AI置信度", 10),
         ("备注", 15),
     ]
@@ -170,42 +172,90 @@ def export_to_excel(
         ws.cell(row=row_idx, column=13).border = thin_border
 
         # ── 图片嵌入 ──
-        if image_mode == "embed" and HAS_PIL:
-            # 查找该产品关联的图片
-            page_num = product.get("page", 0)
-            page_matches = image_matches.get(str(page_num), [])
-            prod_idx = row_idx - 2  # 产品在列表中的索引
-            for match in page_matches:
-                if match.get("product_idx") == prod_idx:
-                    img_idx = match.get("image_idx", 0)
-                    # 构建图片文件名
-                    img_filename = f"p{page_num:03d}_xref{img_idx}"
-                    # 在images_dir中查找
-                    found_img = _find_image(images_dir, img_filename)
-                    if found_img and Path(found_img).exists():
-                        try:
-                            thumb = _create_thumbnail(found_img, thumbnail_size)
-                            if thumb:
-                                xl_img = XLImage(thumb)
-                                # 缩放到合适大小
-                                xl_img.width, xl_img.height = min(thumb.size[0], thumbnail_size[0]), min(thumb.size[1], thumbnail_size[1])
-                                ws.add_image(xl_img, f"{get_column_letter(img_col)}{row_idx}")
-                                ws.row_dimensions[row_idx].height = max(ws.row_dimensions[row_idx].height or 15, thumbnail_size[1] * 0.8)
-                        except Exception:
-                            pass
-                    break
+        page_num = product.get("page", 0)
+        found_img = None
 
-            # 如果没找到嵌入图片，用路径模式
-            if image_mode == "path":
-                img_path = _find_image(images_dir, f"p{page_num:03d}")
-                if img_path:
-                    ws.cell(row=row_idx, column=img_col, value=img_path)
+        if HAS_PIL:
+            # Priority 1: Check product's _matched_images (already linked)
+            matched_images = product.get("_matched_images", [])
+            for mi in matched_images:
+                filename = mi.get("filename", "")
+                xref = mi.get("xref", 0)
+                if filename:
+                    # Try direct filename lookup
+                    candidate = os.path.join(images_dir, filename)
+                    if os.path.isfile(candidate):
+                        found_img = candidate
+                        break
+                    # Try subfolder
+                    pdf_dir = os.path.dirname(images_dir)
+                    for root, dirs, files in os.walk(pdf_dir):
+                        if filename in files:
+                            found_img = os.path.join(root, filename)
+                            break
+                    if found_img:
+                        break
+                # Fallback: construct filename from xref
+                if xref and xref > 0:
+                    img_filename = f"p{page_num:03d}_xref{xref}"
+                    candidate = _find_image(images_dir, img_filename)
+                    if candidate and os.path.isfile(candidate):
+                        found_img = candidate
+                        break
 
-        elif image_mode == "path":
-            page_num = product.get("page", 0)
-            img_path = _find_image(images_dir, f"p{page_num:03d}")
-            if img_path:
-                ws.cell(row=row_idx, column=img_col, value=img_path)
+            # Priority 2: Check all_matches dict for this product
+            if not found_img:
+                prod_idx = row_idx - 2  # 产品在列表中的全局索引
+                page_matches = image_matches.get(str(page_num), [])
+                for match in page_matches:
+                    if match.get("product_idx") == prod_idx:
+                        xref = match.get("image_xref", match.get("image_idx", 0))
+                        img_filename = f"p{page_num:03d}_xref{xref}"
+                        candidate = _find_image(images_dir, img_filename)
+                        if candidate and os.path.isfile(candidate):
+                            found_img = candidate
+                            break
+
+            # Embed thumbnail with TwoCellAnchor (moves/sizes with cells)
+            if found_img and os.path.isfile(found_img):
+                try:
+                    thumb = _create_thumbnail(found_img, thumbnail_size)
+                    if thumb:
+                        xl_img = XLImage(thumb)
+                        img_w = min(thumb.size[0], thumbnail_size[0])
+                        img_h = min(thumb.size[1], thumbnail_size[1])
+                        xl_img.width = img_w
+                        xl_img.height = img_h
+                        # TwoCellAnchor: image moves with row (editAs='oneCell')
+                        # _from: top-left of image cell, to: bottom-right of image cell
+                        col0 = img_col - 1  # 0-indexed
+                        row0 = row_idx - 1
+                        from_marker = AnchorMarker(
+                            col=col0, colOff=pixels_to_EMU(4),
+                            row=row0, rowOff=pixels_to_EMU(4),
+                        )
+                        to_marker = AnchorMarker(
+                            col=col0 + 1, colOff=pixels_to_EMU(4),
+                            row=row0 + 1, rowOff=pixels_to_EMU(4),
+                        )
+                        xl_img.anchor = TwoCellAnchor(
+                            _from=from_marker, to=to_marker, editAs='oneCell',
+                        )
+                        ws.add_image(xl_img)
+                        ws.row_dimensions[row_idx].height = max(
+                            ws.row_dimensions[row_idx].height or 15,
+                            img_h * 0.90,
+                        )
+                except Exception:
+                    pass
+
+        # Path mode fallback: write the image path as text
+        if image_mode == "path" or not found_img:
+            if found_img:
+                ws.cell(row=row_idx, column=img_col, value=found_img).border = thin_border
+            elif matched_images:
+                ws.cell(row=row_idx, column=img_col,
+                        value=matched_images[0].get("filename", "未找到")).border = thin_border
 
     # 自适应行高
     for row in range(2, len(products) + 2):

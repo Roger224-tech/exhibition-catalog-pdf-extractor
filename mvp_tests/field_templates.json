@@ -1,0 +1,99 @@
+{
+  "active_template": "01",
+  "templates": {
+    "默认模板": [
+      {
+        "key": "brand",
+        "label": "品牌/制造商",
+        "editable": true
+      },
+      {
+        "key": "vehicle_fitment",
+        "label": "车型适配",
+        "editable": true
+      },
+      {
+        "key": "oe_number",
+        "label": "产品编号/OE号",
+        "editable": true
+      },
+      {
+        "key": "description_1",
+        "label": "描述一",
+        "editable": true
+      },
+      {
+        "key": "description_2",
+        "label": "描述二",
+        "editable": true
+      },
+      {
+        "key": "description_3",
+        "label": "描述三/规格",
+        "editable": true
+      },
+      {
+        "key": "price",
+        "label": "价格",
+        "editable": true
+      },
+      {
+        "key": "oem_ref",
+        "label": "OEM参考号",
+        "editable": true
+      },
+      {
+        "key": "pack_qty",
+        "label": "每包数量",
+        "editable": true
+      }
+    ],
+    "01": [
+      {
+        "key": "brand",
+        "label": "品牌",
+        "editable": true
+      },
+      {
+        "key": "vehicle_fitment",
+        "label": "车型",
+        "editable": true
+      },
+      {
+        "key": "oe_number",
+        "label": "产品编号",
+        "editable": true
+      },
+      {
+        "key": "description_1",
+        "label": "描述一",
+        "editable": true
+      },
+      {
+        "key": "description_2",
+        "label": "描述二",
+        "editable": true
+      },
+      {
+        "key": "description_3",
+        "label": "描述三",
+        "editable": true
+      },
+      {
+        "key": "price",
+        "label": "价格",
+        "editable": true
+      },
+      {
+        "key": "oem_ref",
+        "label": "OEM参考号",
+        "editable": true
+      },
+      {
+        "key": "pack_qty",
+        "label": "每包数量",
+        "editable": true
+      }
+    ]
+  }
+}
