@@ -1,0 +1,34 @@
+# === 展会目录PDF提取工具 — 完整依赖 ===
+# 用于环境安装: pip install -r requirements_full.txt
+
+# PDF解析 (核心)
+pymupdf>=1.24.0
+
+# OCR (扫描件识别 + 交互式框选重提取)
+paddleocr>=2.8.0
+
+# 图像处理
+opencv-python>=4.9.0
+Pillow>=10.0.0
+
+# 数据处理 & Excel导出
+pandas>=2.2.0
+openpyxl>=3.1.0
+
+# 版面分析后备方案
+pdfplumber>=0.11.0
+
+# 配置解析
+PyYAML>=6.0
+
+# 命令行进度条
+tqdm>=4.66.0
+
+# PaddleOCR辅助依赖
+rapidfuzz>=3.0.0
+pyclipper>=1.3.0
+shapely>=2.0.0
+scikit-image>=0.24.0
+scipy>=1.12.0
+attrdict>=2.0.0
+filelock>=3.13.0

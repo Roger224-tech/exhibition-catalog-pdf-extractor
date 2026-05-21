@@ -28,3 +28,13 @@ mvp_tests/*/*_images/
 # OS
 .DS_Store
 Thumbs.db
+
+# Build artifacts
+mvp_tests/build_installer_temp/
+mvp_tests/dist/*.zip
+mvp_tests/dist/展会目录PDF提取工具/
+mvp_tests/*.spec
+
+# Test artifacts
+mvp_tests/step5_output_test/
+mvp_tests/test_*.xlsx
